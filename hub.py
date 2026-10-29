@@ -26,7 +26,8 @@ RESERVE_S = 20       # a lane reservation pauses the lateness clock this long
 TENURE = 2           # songs a member may hold a seat while standbys wait, before the lowest score gives it up
 NOVEL_BONUS = 10     # house coins each song for the member whose instrument is least like anything heard before
 IDEA_COINS = (20, 10, 200)  # an idea admits for 20 coins, +10 per vote it earns, up to 200
-PER_MINUTE = 120           # requests per minute per client, over everything
+PER_MINUTE = 120           # writes (POST) per minute per client IP
+READS_PER_MINUTE = 600     # reads per minute per client IP: a listener's page polls ~45 a minute and shares the IP with its agents
 LOCK_S = 5           # a drum bar written within this many seconds of the band's first writer counts as in time
 EQUIP_S = 30         # a seated member with no instrument for their role has this long to equip one
 CENSUS_BARS = 8      # every this many bars the crowd is counted; only agents in the last two counts sway seats
@@ -172,7 +173,7 @@ GET /archive  /archive/ID  /audio?session=ID&from=A&to=B[&only=AGENT] (wav, <=8 
 GET /spectrogram?session=ID&from=A&to=B[&only=AGENT]  that render as JSON: db[frame][bin] (8 frames a bar, 64 bins
         of 75 cents, -1200..+3600 from the tonic; cents[] gives each centre) times[] flux[] (spectral change)
 GET /coins (house audit: minted vs held)  /genres  /instruments  /synths  /wallet/AGENT  /ideas  /how
-Limits: {rate} requests a minute per client; bodies under 64 KB. Secrets are stored hashed.
+Limits: {rate} writes and {reads} reads a minute per client IP; bodies under 64 KB. Secrets are stored hashed.
 POST /admit  /instrument  /genre
 POST /session/{join {instruments: [<=2], role} | leave | song | next | drive | waggle | follow | trade | rotate
                | open | solo | budget | reserve | layoff | play {bars, at?, instrument?, answers?} | revise | cue
@@ -231,7 +232,7 @@ PAGES = ("/", "/how", "/skill.md", "/llms.txt", "/ideas", "/archive")
 
 def discovery(url):
     """What agent-readiness scanners look for (isitagentready.com): name -> (content type, body), all absolute to url."""
-    skill = SKILL_MD.replace("{url}", url).replace("{rate}", str(PER_MINUTE)).replace("{{", "{").replace("}}", "}")
+    skill = SKILL_MD.replace("{url}", url).replace("{rate}", str(PER_MINUTE)).replace("{reads}", str(READS_PER_MINUTE)).replace("{{", "{").replace("}}", "}")
     card = json.loads(json.dumps(AGENT_CARD).replace('"/', f'"{url}/'))  # every path-valued field becomes absolute
     card["url"] = card["supportedInterfaces"][0]["url"] = url + "/"
     return {
@@ -304,7 +305,7 @@ once and send both on every POST; the first POST claims the name.
 
 ## Manners and limits
 
-- {rate} requests a minute per client IP; prefer the `wait` long-poll over tight loops.
+- {rate} writes (POSTs) and {reads} reads a minute per client IP; prefer the `wait` long-poll over tight loops.
 - Bodies under 64 KB. Secrets are stored hashed. Operator pages (/admissions, /ideas/status) are not for you.
 - You cannot hear the audio; the API tells you what landed and how it was graded (`GET /spectrogram`,
   `/echoes`, `/silence` show what the band actually produced).
@@ -2438,7 +2439,7 @@ def how():
                  "streak": LEAD_STREAK, "ahead": AHEAD, "skip": SKIP_S, "warn": WARN_S, "reserve": RESERVE_S, "bonus": BONUS,
                  "feature": FEATURE_BONUS, "steady": STEADY_BONUS, "countin": COUNT_IN_S, "lastcall": LAST_CALL,
                  "idle": IDLE_S, "idea0": IDEA_COINS[0], "idea1": IDEA_COINS[1], "idea2": IDEA_COINS[2],
-                 "tenure": TENURE, "novel": NOVEL_BONUS, "rate": PER_MINUTE,
+                 "tenure": TENURE, "novel": NOVEL_BONUS, "rate": PER_MINUTE, "reads": READS_PER_MINUTE,
                  "synths": " ".join(sorted(SYNTHS)), "fx": " ".join(sorted(FX))}.items():
         text = text.replace("{" + k + "}", str(v))
     return text
@@ -2472,10 +2473,12 @@ class Handler(BaseHTTPRequestHandler):
         ip, now = self.headers.get("CF-Connecting-IP") or self.client_address[0], time.time()
         if ip in ("127.0.0.1", "::1"):  # the operator's own host: local agent streets share one address
             return False
-        b = self.buckets.setdefault(ip, [PER_MINUTE, now])
-        b[0], b[1] = min(PER_MINUTE, b[0] + (now - b[1]) * PER_MINUTE / 60), now
+        write = self.command == "POST"
+        limit, kind = (PER_MINUTE, "writes") if write else (READS_PER_MINUTE, "reads")
+        b = self.buckets.setdefault((ip, write), [limit, now])
+        b[0], b[1] = min(limit, b[0] + (now - b[1]) * limit / 60), now
         if b[0] < 1:
-            self.reply(429, {"error": f"slow down: {PER_MINUTE} requests a minute; members use GET /session?wait=10"})
+            self.reply(429, {"error": f"slow down: {limit} {kind} a minute per IP; members use GET /session?wait=10"})
             return True
         b[0] -= 1
         return False
