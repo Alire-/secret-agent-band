@@ -191,6 +191,25 @@ class HubTest(unittest.TestCase):
         self.assertEqual(hub.band["sub"]["role"], "chords")
         self.assertIsNone(hub.delays(done, done["parts"]["a/harp"])[0])  # first written bar is startup, not delay
 
+    def test_warm_standby_prewrite(self):
+        hub, s = self.hub, self.hub.session
+        self.admit("lead", "b", "sub")
+        self.seat(("lead", "harp"), ("b", "bass"))
+        with self.assertRaises(ValueError):
+            hub.stand_by({**agent("sub"), "instruments": ["bass"], "prewrite": "1|1"})  # one bar only
+        hub.stand_by({**agent("sub"), "instruments": ["bass"], "prewrite": "1 . 5 ."})
+        self.assertEqual(hub.view()["seat_queue"]["warm"], [])
+        hub.play({**agent("lead"), "bars": "1|1"})
+        hub.tick()
+        hub.band["b"]["strikes"] = 1  # skipped once already: late again and the seat empties
+        warm = hub.view()["seat_queue"]["warm"]
+        self.assertEqual([(w["agent"], w["role"], w["replaces"], w["prewrite"]) for w in warm], [("sub", "bass", "b", True)])
+        self.assertLessEqual(warm[0]["first_bar_in_s"], H.SKIP_S)
+        s["behind"]["b"] -= H.SKIP_S
+        hub.tick()  # b removed; sub takes the seat and its prewritten bar plays at once
+        self.assertEqual(s["parts"]["sub/bass"]["bars"], [".", ".", "1 . 5 ."])
+        self.assertEqual(s["events"][-1]["kind"], "prewrite")
+
     def test_song_end_reshuffles_band(self):
         hub = self.hub
         self.admit("good", "dud", "x", "y", "rich", "hummer", "f1", "f2", "f3")
