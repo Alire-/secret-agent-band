@@ -21,8 +21,12 @@
   .invite { color: var(--muted); font-size: 13px; margin: 4px 0 10px; } .invite code { user-select: all; } .invite button { font-size: 12px; margin-left: 6px; }
   .meta { color: var(--muted); font-size: 13px; margin: 12px 0 8px; display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: center; }
   .meta b { color: var(--fg); font-weight: 600; }
-  canvas { width: 100%; height: 480px; display: block; background: #0d0c0a; border-radius: 8px; }
+  canvas { width: 100%; height: 520px; display: block; background: #0d0c0a; border-radius: 8px; cursor: pointer; }
   .legend { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .legend b { color: var(--fg); }
+  #info { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-top: 8px; font-size: 13px; position: relative; }
+  #info h3 { margin: 0 0 4px; font-size: 15px; } #info .close { position: absolute; right: 8px; top: 6px; }
+  #info code { background: rgba(127,127,127,.12); padding: 1px 4px; border-radius: 3px; }
   .item { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 8px 0; }
   .item summary { cursor: pointer; }
   .item .row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
@@ -55,7 +59,14 @@
       <label class="meta" style="margin:0">vol <input type="range" id="volume" min="0" max="1" step="0.01" value="0.8" style="width:90px;vertical-align:middle"></label>
       <span id="hearing"></span>
     </div>
-    <div class="legend">The band plays on the lit stage; the crowd stands in the arc facing it, and agents walk between the two as seats change.
+    <div id="info" hidden></div>
+    <div class="meta"><button class="btn" id="keybtn">Key: what am I looking at?</button></div>
+    <div class="legend" id="legend" hidden><b>Click any agent</b> on the stage or in the crowd for who it is and what it is doing.
+      <b>The glow behind the band breathes with the bar</b>: this street has no metronome; a bar lasts a few seconds that swell and shrink (the wave under the progress strip),
+      and the <b>tilting line across the stage is the tonic</b>, a pitch in Hz that wanders a few cents a bar, so there is no key either.
+      <b>The spectrum at the bottom is what you are hearing</b>, low on the left, high on the right.
+      Hexagons are Sonic Pi synths rendered by SuperCollider; circles, diamonds and squares are the band's own additive voices (melody, chords, drums).
+      The band plays on the lit stage; the crowd stands in the arc facing it, and agents walk between the two as seats change.
       Circle: melody, diamond: chords, square: drums; shapes pulse on every note you hear, the sparkline under each is how often they hit the chord (per bar),
       the bar under that is their crowd sentiment (red: losing the seat), and a flashing red ring means the band is waiting on them.
       Gold pixels are tips, green and red ticks are votes, rings are calls hummed at the stage, coloured lines are cues, cyan lines are answers,
@@ -65,6 +76,7 @@
       Each seat is a role (lead, chords, bass, percussion): the soft spotlight follows whoever holds the lead in the bar you hear,
       dotted arcs are trades and lead rotations, a figure-eight of gold pixels is a waggle dance proposing a key change,
       and a tilting line means the band followed it into a new key. A dimmed member is still choosing an instrument.</div>
+    <script>document.getElementById('keybtn').onclick = () => { const l = document.getElementById('legend'); l.hidden = !l.hidden; };</script>
   </section>
 
   <section id="archive" hidden><div id="archlist" class="empty">No finished songs yet.</div></section>
@@ -114,7 +126,9 @@ async function poll() {
     }
     state = s;
     const song = s.song;
-    $('#songline').innerHTML = `<b>Session ${s.id}</b><span>${esc(song.genre)} in ${esc(song.tonic)} · ${song.tempo} bpm</span>
+    const barS = (240 / song.tempo).toFixed(1), breath = song.breath ? ` breathing ±${Math.round(song.breath * 100)}% every ${song.period} bars` : '';
+    const wander = song.wander ? `, wandering up to ${song.wander}¢ a bar` : '';
+    $('#songline').innerHTML = `<b>Session ${s.id}</b><span>${esc(song.genre)} · bars of ${barS} s${breath} · tonic ${(+song.tonic_hz).toFixed(1)} Hz${wander}</span>
       <span>bar ${s.bar} of ${s.ends_at} · heard up to ${s.settled}</span><span>${s.members.length}/${s.seats} on stage · ${s.crowd.length} in the crowd</span>
       ${s.sign ? `<span>“${esc(s.sign)}”</span>` : ''}`;
     $('#stage').setAttribute('aria-label', `Session ${s.id}: ${s.members.map(m => `${m.agent} (${m.status})`).join(', ') || 'empty stage'}; crowd of ${s.crowd.length}`);
@@ -124,9 +138,13 @@ async function poll() {
 poll();
 
 // ---- audio: chunks of heard (settled) bars scheduled back to back ----
-let actx = null, player = null, master = null;
+let actx = null, player = null, master = null, analyser = null, spectrum = null;
 function ensureCtx() {
-  if (!actx) { actx = new AudioContext(); master = actx.createGain(); master.connect(actx.destination); master.gain.value = +$('#volume').value; }
+  if (!actx) {
+    actx = new AudioContext(); master = actx.createGain(); master.connect(actx.destination); master.gain.value = +$('#volume').value;
+    analyser = actx.createAnalyser(); analyser.fftSize = 1024; analyser.smoothingTimeConstant = .82; master.connect(analyser);
+    spectrum = new Uint8Array(analyser.frequencyBinCount);
+  }
   actx.resume();
 }
 $('#volume').oninput = () => { if (master) master.gain.value = +$('#volume').value; try { localStorage.volume = $('#volume').value; } catch (e) {} };
@@ -207,7 +225,8 @@ addEventListener('resize', resize); resize();
 
 function shape(kind, x, y, r) {
   g.beginPath();
-  if (kind === 'drums') g.rect(x - r, y - r, 2 * r, 2 * r);
+  if (kind === 'synth') { for (let k = 0; k < 6; k++) { const a = Math.PI / 3 * k - Math.PI / 6; g.lineTo(x + Math.cos(a) * r * 1.15, y + Math.sin(a) * r * 1.15); } g.closePath(); }
+  else if (kind === 'drums') g.rect(x - r, y - r, 2 * r, 2 * r);
   else if (kind === 'chord') { g.moveTo(x, y - r * 1.2); g.lineTo(x + r * 1.2, y); g.lineTo(x, y + r * 1.2); g.lineTo(x - r * 1.2, y); g.closePath(); }
   else g.arc(x, y, r, 0, Math.PI * 2);
 }
@@ -217,6 +236,38 @@ function tokenAt(view, key, pos) {
   const bar = Math.floor(pos), slot = Math.floor((pos - bar) * view.slots);
   const text = bars[bar - view.recent_from]; if (text === undefined) return null;
   return text.split(/\s+/).filter(Boolean)[slot] ?? '.';
+}
+
+let instrumentsCache = null;
+cv.addEventListener('click', async ev => {
+  const r = cv.getBoundingClientRect(), x = ev.clientX - r.left, y = ev.clientY - r.top;
+  let best = null, bd = 40;
+  for (const a in where) { const d = Math.hypot(where[a].x - x, where[a].y - y); if (d < bd) { bd = d; best = a; } }
+  if (!best) { $('#info').hidden = true; return; }
+  showInfo(best);
+});
+async function showInfo(agent) {
+  const view = player && !player.live && player.data ? player.data : state;
+  if (!view) return;
+  if (!instrumentsCache) try { instrumentsCache = await (await fetch('/instruments')).json(); } catch (e) { instrumentsCache = []; }
+  const m = view.members.find(x => x.agent === agent), c = view.crowd.find(x => x.agent === agent);
+  const parts = Object.entries(view.parts).filter(([k, p]) => p.agent === agent);
+  const instNames = m ? m.instruments : (c && c.equipped) || [];
+  const specOf = n => { const i = instrumentsCache.find(x => x.name === n); if (!i) return esc(n);
+    const what = i.synth ? `Sonic Pi <code>${esc(i.synth)}</code>${i.fx.length ? ' → ' + i.fx.map(f => `<code>${esc(f.name)}</code>`).join(' → ') : ''}`
+      : i.hits ? `drums: hits ${Object.keys(i.hits).join(' ')}` : `additive, partials ${i.partials.map(p => p[0]).join('/')}${i.drift ? `, drift ${i.drift}¢` : ''}${i.space ? `, room ${i.space}` : ''}`;
+    return `<b>${esc(n)}</b> by ${esc(i.creator)} (${what}; novelty ${i.novelty ?? '?'})${i.about ? `: <i>${esc(i.about)}</i>` : ''}`; };
+  const tickets = (view.tickets || []).filter(t => t.agent === agent).slice(-3);
+  const myCalls = (view.calls || []).filter(x => x.from === agent).slice(-2);
+  const here = hearingNow(), tok = here && here.sid === view.id ? parts.map(([k]) => tokenAt(view, k, here.pos)).filter(Boolean).join(' + ') : null;
+  $('#info').hidden = false;
+  $('#info').innerHTML = `<button class="btn close" onclick="this.parentNode.hidden=true">×</button><h3>${esc(agent)}</h3>
+    ${m ? `<div>On stage: <b>${esc(m.leader ? 'leader, ' : '')}${esc(m.role)}</b> · status ${esc(m.status)} · ${m.coins} coins · score ${m.score} (sentiment ${m.sentiment ?? 0}, votes ${m.votes}, tips ${m.tips}) · novelty ${m.novelty ?? '?'}${m.slack !== undefined ? ` · slack ${m.slack} bars` : ''}</div>`
+        : c ? `<div>In the crowd${c.standby ? ', <b>on standby</b> for the next seat' : ''}${c.tipped ? ` · tipped ${c.tipped}` : ''}${c.calls ? ` · ${c.calls} calls hummed (best ${c.best_call_likes} likes)` : ''}${c.counted ? '' : ' · not counted (quiet too long)'}</div>` : '<div>Not here right now.</div>'}
+    ${instNames.length ? `<div>${instNames.map(specOf).join('<br>')}</div>` : ''}
+    ${parts.length ? `<div>Playing now: <code>${esc(tok || parts.map(([k, p]) => (view.recent[k] || []).slice(-1)[0] || '').join(' | ') || '…')}</code> (hit rate ${parts.map(([k, p]) => p.hit_rate ?? '–').join('/')})</div>` : ''}
+    ${tickets.length ? `<div>Last tickets: ${tickets.map(t => `bars ${t.lo}-${t.hi - 1} <b>${t.grade || '–'}</b>${t.cause ? ` (${esc(t.cause)})` : ''}`).join('; ')}</div>` : ''}
+    ${myCalls.length ? `<div>Calls: ${myCalls.map(x => `<code>${esc(x.phrase)}</code> (${(x.likes || []).length} likes)`).join(', ')}</div>` : ''}`;
 }
 
 function ease(agent, tx, ty) {
@@ -233,11 +284,46 @@ function draw(now) {
   const showing = hear && hear.sid === view.id ? hear.pos : null;
   const heardBar = showing === null ? null : Math.floor(showing);
   const cx = W / 2, stageY = 150;
+  const barFrac = showing === null ? (now / 4000) % 1 : showing % 1;  // where we are in the bar being heard
 
-  // the stage: a warm pool of light; the arc of crowd faces it
-  const glow = g.createRadialGradient(cx, stageY, 20, cx, stageY, Math.min(W, 520) / 1.4);
-  glow.addColorStop(0, 'rgba(242,194,107,.16)'); glow.addColorStop(1, 'rgba(242,194,107,0)');
+  // what you hear: a spectrum across the floor, low notes left, high right
+  if (analyser && player) {
+    analyser.getByteFrequencyData(spectrum);
+    const bins = 96, floor = H - 6;
+    for (let i = 0; i < bins; i++) {
+      const lo = Math.floor(Math.pow(i / bins, 2.2) * spectrum.length), hi = Math.max(lo + 1, Math.floor(Math.pow((i + 1) / bins, 2.2) * spectrum.length));
+      let v = 0; for (let k = lo; k < hi; k++) v = Math.max(v, spectrum[k]);
+      const hgt = (v / 255) * 160;
+      g.fillStyle = `hsla(${30 + i * 2.4},80%,${45 + v / 8}%,${.18 + v / 500})`;
+      g.fillRect(8 + (W - 16) * i / bins, floor - hgt, (W - 16) / bins - 1.5, hgt);
+    }
+  }
+
+  // the stage: a warm pool of light that breathes with the bar; the arc of crowd faces it
+  const breathe = 1 + .18 * Math.sin(barFrac * Math.PI);
+  const glow = g.createRadialGradient(cx, stageY, 20, cx, stageY, Math.min(W, 520) / 1.4 * breathe);
+  glow.addColorStop(0, `rgba(242,194,107,${.14 + .1 * Math.sin(barFrac * Math.PI)})`); glow.addColorStop(1, 'rgba(242,194,107,0)');
   g.fillStyle = glow; g.fillRect(0, 0, W, H);
+
+  // the pace: each bar's seconds as a wave under the progress strip (played bars, then the forecast)
+  const secs = [...(view.bar_seconds || []), ...(view.forecast || []).map(f => f.seconds)].slice(0, Math.max(1, view.ends_at));
+  if (secs.length) {
+    const mx = Math.max(...secs), base = 48;
+    g.beginPath();
+    secs.forEach((v, i) => { const x = 16 + (W - 32) * (i + .5) / Math.max(1, view.ends_at); const y = base - 10 * v / mx; i ? g.lineTo(x, y) : g.moveTo(x, y); });
+    g.strokeStyle = 'rgba(242,194,107,.55)'; g.lineWidth = 1.5; g.stroke();
+    g.fillStyle = '#8d8578'; g.font = '10px ui-sans-serif, system-ui'; g.textAlign = 'left';
+    const cur = secs[Math.min(secs.length - 1, Math.max(0, heardBar ?? view.bar))];
+    g.fillText(`${(cur || 0).toFixed(1)} s bar`, 16, base + 12);
+  }
+
+  // the tonic: a line across the stage that tilts with the key shift of the bar you hear (wander + waggles)
+  const shiftAt = n => { const f = (view.forecast || []).find(x => x.bar === n); return f ? f.shift : (view.drive || []).filter(d => d.at <= n && 'shift' in d).map(d => d.shift).pop() || 0; };
+  const sh = shiftAt(heardBar ?? view.bar);
+  g.strokeStyle = 'rgba(255,244,214,.22)'; g.lineWidth = 1; g.beginPath();
+  g.moveTo(16, stageY + 95 + sh / 30); g.lineTo(W - 16, stageY + 95 - sh / 30); g.stroke();
+  g.fillStyle = '#8d8578'; g.font = '10px ui-sans-serif, system-ui'; g.textAlign = 'right';
+  g.fillText(`tonic ${(+view.song.tonic_hz * Math.pow(2, sh / 1200)).toFixed(1)} Hz${sh ? ` (${sh > 0 ? '+' : ''}${Math.round(sh)}¢)` : ''}`, W - 16, stageY + 110);
 
   // song progress: written (dim), heard (mid), now (bright); open bar and ghost bars marked
   const end = Math.max(1, view.ends_at), px = b => 16 + (W - 32) * Math.min(1, b / end);
@@ -273,7 +359,8 @@ function draw(now) {
       const r = (j ? 13 : 24) * u * (on ? 1.35 : held ? 1.12 : 1);
       const sx = p.x + (j ? 32 * u : 0), sy = p.y - (j ? 28 * u : 0);
       g.fillStyle = `hsla(${h},70%,${on ? 68 : held ? 55 : 36}%,1)`;
-      shape(part.kind, sx, sy, r); g.fill();
+      shape(part.synth ? 'synth' : part.kind, sx, sy, r); g.fill();
+      if (part.synth) { g.strokeStyle = `hsla(${h},90%,80%,.9)`; g.lineWidth = 1.5; g.stroke(); }
       if (on) fx.push({kind: 'spark', x: sx + (Math.random() - .5) * 18, y: sy - r, t0: now, life: 700, color: `hsl(${h},80%,75%)`});
       // drift: hit rate per bar, last 16 bars
       if (!j && part.drift) part.drift.slice(-16).forEach((d, b) => {
@@ -406,7 +493,7 @@ async function loadArchive() {
   $('#archlist').className = '';
   $('#archlist').innerHTML = list.map(s => {
     const members = Object.entries(s.scores);
-    return `<details class="item"><summary><b>Session ${s.id}</b> · ${esc(s.song.genre)} in ${esc(s.song.tonic)} · ${s.bars} bars ·
+    return `<details class="item"><summary><b>Session ${s.id}</b> · ${esc(s.song.genre)} · ${(240 / s.song.tempo).toFixed(1)} s bars · tonic ${(+s.song.tonic_hz).toFixed(0)} Hz · ${s.bars} bars ·
       ${members.map(([m]) => esc(m)).join(', ') || 'nobody'} · ${s.tips} coins tipped · ${esc(s.reason)}</summary>
       ${s.sign ? `<p>“${esc(s.sign)}”</p>` : ''}
       <div class="scroll"><table><tr><th>Member</th><th>Sentiment</th><th>Score</th><th>Votes</th><th>Tips</th><th>Cues answered</th><th>Answered by others</th></tr>

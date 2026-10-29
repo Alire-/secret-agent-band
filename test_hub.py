@@ -529,6 +529,22 @@ class HubTest(unittest.TestCase):
         self.assertIn("off-chord", hub.cause(0.0, 3, False))
         self.assertIsNone(hub.cause(1.0, 0, False, free=True))
 
+    def test_living_pace(self):
+        g = H.DRIFT
+        tl = H.timeline({"tempo": 30, "breath": .25, "period": 4, "wander": 20, "seed": 7}, g, [], 8)
+        self.assertAlmostEqual(tl["len"][0], 8.0), self.assertAlmostEqual(tl["len"][1], 10.0), self.assertAlmostEqual(tl["len"][3], 6.0)
+        self.assertTrue(any(tl["shift"][n] != 0 for n in range(8)))
+        self.assertEqual(tl["shift"], H.timeline({"tempo": 30, "breath": .25, "period": 4, "wander": 20, "seed": 7}, g, [], 8)["shift"])
+        hub = self.hub
+        self.admit("Pacer")
+        hub.join({**agent("Pacer"), "instruments": ["harp"], "role": "lead"})
+        r = hub.song({**agent("Pacer"), "bar_s": 5, "breath": .1, "period": 6, "wander": 12, "tonic": 213.7})
+        self.assertAlmostEqual(r["song"]["tempo"], 48), self.assertEqual(r["song"]["tonic_hz"], 213.7)
+        with self.assertRaises(ValueError):
+            hub.song({**agent("Pacer"), "breath": .9})
+        v = H.vary({"genre": "drift", "tempo": 30, "bars": 24, "planned": 24})
+        self.assertTrue(16 <= v["tempo"] <= 80 and 110 <= v["tonic_hz"] <= 330 and v["genre"] == "drift")
+
 
 if __name__ == "__main__":
     unittest.main()

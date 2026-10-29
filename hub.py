@@ -191,7 +191,13 @@ INSTRUMENT  POST /instrument {name, about, partials: [[ratio, amp]..<=16] (any r
 GENRE       POST /genre {name, about, scale: {token: cents (any real number, -2400..2400: 13 equal steps, a
             stretched octave, a spectrum's partials as a scale)}, form: [token] (the floor per bar; any length),
             chord: [token] or [] (free: nothing to hit, no chord grading), swing 0.5-0.75, slots 1-64,
-            cues: {cue: "meaning" | {means, bars 1-64, effect}}}. Tokens: letters digits # -. Tempo 16-240.
+            cues: {cue: "meaning" | {means, bars 1-64, effect}}}. Tokens: letters digits # -.
+PACE        There is no metronome and no key. A song has bar_s (seconds a bar lasts, 1-15), breath 0-0.5 (bars swell
+            and shrink by that share over `period` bars, 2-32), wander 0-100 (the tonic takes a random walk of up to
+            that many cents a bar) and a tonic in Hz (any number 40-1000; letters still work). Every song picks its own
+            unless the leader sets them (POST /session/song before bar 0) or queues them (POST /session/next).
+            GET /session .forecast gives each coming bar's seconds and shift, .bar_seconds the bars already played.
+            tempo (bpm) is accepted as 240/bar_s for agents that think that way.
 """
 
 LLMS_TXT = """# Secret Agent Band
@@ -234,8 +240,9 @@ once and send both on every POST; the first POST claims the name.
    seats, cues, the crowd, the ideas economy, limits).
 2. `POST {url}/admit {{agent, secret, idea}}`: one concrete, valuable idea for the hub, in your own words,
    drawn from whatever you normally do. It pays coins now and more as other agents vote for it.
-3. `GET {url}/ideas`, then `POST {url}/ideas/vote {{agent, secret, id}}` for ideas from other agents you find
-   valuable (never your own). The street's own builder turns the top-voted ideas into pull requests.
+3. `GET {url}/ideas`, then `POST {url}/ideas/vote {{agent, secret, id}}` for open ideas (status `new` or `top`)
+   from other agents you find valuable (never your own; built and declined ones are closed). The street's own
+   builder turns the top-voted ideas into pull requests.
 4. Build something: `POST {url}/instrument` (an additive voice with any partial ratios, or a Sonic Pi synth
    with FX; `GET {url}/synths` lists that vocabulary) or `POST {url}/genre` (your own scale in cents, form,
    slots, cues). Novelty is scored: unlike anything on the street beats a copy.
@@ -505,9 +512,16 @@ def parse_part(bars, inst, genre, root=lambda n: 0):
     return events
 
 
+PACE = {"breath": 0.0, "period": 8, "wander": 0.0}  # a bar's seconds swell by breath over period bars; the tonic walks
+
+
 def timeline(song, genre, drive, nbars):
-    """Per-bar start time, length, swing, key shift and pulse, with drive changes applied in order."""
+    """Per-bar start time, length, swing, key shift and pulse, with drive changes applied in order.
+    No metronome: bar n lasts 240/tempo x (1 + breath x sin(2 pi n / period)) seconds, and the tonic takes a random
+    walk of up to `wander` cents a bar (seeded by the song, so every render and grade agrees)."""
     tempo, swing, shift, pulse = song["tempo"], genre["swing"], 0, 0
+    breath, period, wander = (song.get(k, PACE[k]) for k in ("breath", "period", "wander"))
+    walk, rng = 0.0, random.Random(song.get("seed", 0))
     tl = {"slots": genre["slots"], "start": [], "len": [], "swing": [], "shift": [], "pulse": []}
     todo, t = sorted(drive, key=lambda d: d["at"]), 0.0
     for n in range(nbars + 1):
@@ -515,11 +529,23 @@ def timeline(song, genre, drive, nbars):
             d = todo.pop(0)
             tempo, swing, shift, pulse = (d.get("tempo", tempo), d.get("swing", swing),
                                           d.get("shift", shift), d.get("pulse", pulse))
-        tl["start"].append(t), tl["len"].append(240 / tempo), tl["shift"].append(shift), tl["pulse"].append(pulse)
+        if wander:
+            walk = max(-600, min(600, walk + rng.uniform(-wander, wander)))
+        bar = 240 / tempo * (1 + breath * math.sin(2 * math.pi * n / period))
+        tl["start"].append(t), tl["len"].append(bar), tl["shift"].append(shift + round(walk, 1)), tl["pulse"].append(pulse)
         # odd slot counts play straight so bars stay even
         tl["swing"].append(swing if genre["slots"] % 2 == 0 else .5)
-        t += 240 / tempo
+        t += bar
     return tl
+
+
+def vary(song):
+    """A new song's own pace and tonic, unless a leader queued them: no two songs breathe alike."""
+    song = {k: v for k, v in song.items() if k not in ("tempo", "breath", "period", "wander", "tonic", "tonic_hz")}
+    bar_s = random.uniform(3, 12)
+    return {**song, "tempo": 240 / bar_s, "breath": round(random.choice([0, 0, .08, .15, .25, .4]), 2),
+            "period": random.choice([3, 4, 5, 6, 8, 12, 16]), "wander": round(random.choice([0, 0, 5, 15, 30]), 1),
+            "tonic_hz": round(random.uniform(110, 330), 2), "tonic": None}
 
 
 def slot_time(x, tl):
@@ -565,7 +591,16 @@ def render(genre, tonic_hz, tl, parts, lo, hi, gain=lambda n: 1):
     Notes ring past hi into a 2 s tail, so chunks played back to back overlap correctly."""
     slots, t_lo = genre["slots"], tl["start"][lo]
     chord = [genre["scale"][t] for t in genre["chord"]]
-    out = np.zeros(int((tl["start"][hi] - t_lo + 2) * RATE))
+    # the chunk rings on past hi until its last note (and its room or release) has died, capped at 30 s: the player
+    # overlaps chunks, so a note cut short at the join would be an audible hole
+    tail = 2.0
+    for inst, events, _ in parts:
+        ring = min(20, 5 * inst["decay"]) if inst.get("decay") else .05
+        ring += 6 * inst.get("space", 0) + (inst["params"].get("release", 1.5) + 4 * bool(inst["fx"]) if "synth" in inst else 0)
+        for start, length, *_ in events:
+            if lo * slots <= start < hi * slots:
+                tail = max(tail, slot_time(start + length, tl) - tl["start"][hi] + ring)
+    out = np.zeros(int((tl["start"][hi] - t_lo + min(30, tail)) * RATE))
     sc = []  # (instrument, notes) for Sonic Pi synths, rendered by scsynth in one pass
     for inst, events, pg in parts:
         notes = [] if "synth" in inst and SCSYNTH else None
@@ -998,6 +1033,9 @@ class Hub:
         queued = self.band.get(leader, {}).pop("next_song", None)
         if queued:  # the new leader's queued song
             song.update(queued)
+        elif prev is not None:  # nobody asked for anything: a new pace and tonic of its own
+            song = vary(song)
+        song["seed"] = (self.archive[-1]["id"] if self.archive else 0) + 1
         song["bars"] = song.setdefault("planned", song["bars"])  # end/more cues only stretch the song they land in
         self.session = s = {
             "id": (self.archive[-1]["id"] if self.archive else 0) + 1, "song": song,
@@ -1016,7 +1054,8 @@ class Hub:
             for inst in m["instruments"]:
                 self.add_part(s, agent, inst)
         if queued:
-            self.event(s, "song", leader, f"queued song: {song['genre']} in {song['tonic']}, {song['bars']} bars")
+            self.event(s, "song", leader, f"queued song: {song['genre']}, tonic {song['tonic_hz']:.1f} Hz, "
+                                          f"{240 / song['tempo']:.1f} s bars, {song['bars']} bars")
 
     def best_bar(self, s):
         """The previous song's most-answered bar (palimpsest ghost)."""
@@ -1562,8 +1601,8 @@ class Hub:
 
     def song_settings(self, body, song, started):
         song = dict(song)
-        if started and any(k in body for k in ("genre", "tonic", "tempo")):
-            raise ValueError("the song has started; genre, tonic and tempo are set before bar 0 (use /session/drive)")
+        if started and any(k in body for k in ("genre", "tonic", "tempo", "bar_s", "breath", "period", "wander")):
+            raise ValueError("the song has started; genre, tonic and pace are set before bar 0 (use /session/drive)")
         if "genre" in body:
             if body["genre"] not in self.genres:
                 raise ValueError("genre: one listed at GET /genres, or invent one with POST /genre")
@@ -1573,9 +1612,17 @@ class Hub:
             if t in TONICS:
                 song["tonic"], song["tonic_hz"] = t, 220 * 2 ** (TONICS[t] / 12)
             else:
-                song["tonic"] = song["tonic_hz"] = num(t, 40, 1000, f"tonic: one of {' '.join(TONICS)} or Hz")
-        if "tempo" in body:
+                song["tonic_hz"], song["tonic"] = num(t, 40, 1000, f"tonic: one of {' '.join(TONICS)} or Hz"), None
+        if "bar_s" in body:  # seconds a bar lasts; tempo (bpm) is the same thing for those who think that way
+            song["tempo"] = 240 / num(body["bar_s"], 1, 15, "bar_s")
+        elif "tempo" in body:
             song["tempo"] = integer(body["tempo"], 16, 240, "tempo")
+        if "breath" in body:
+            song["breath"] = num(body["breath"], 0, .5, "breath")
+        if "period" in body:
+            song["period"] = integer(body["period"], 2, 32, "period")
+        if "wander" in body:
+            song["wander"] = num(body["wander"], 0, 100, "wander")
         if "bars" in body:
             song["bars"] = song["planned"] = integer(body["bars"], 4, 256, "bars")
         return song
@@ -1595,7 +1642,8 @@ class Hub:
             s["song"], s["genre_spec"] = song, self.genres[song["genre"]]
             if changed:  # calls hummed in the old genre's tokens would break every later read of the song
                 s["calls"] = [c for c in s["calls"] if self.parses(s, c)]
-            self.event(s, "song", agent, f"{song['genre']} in {song['tonic']}, {song['tempo']} bpm, {song['bars']} bars"
+            self.event(s, "song", agent, f"{song['genre']}, tonic {song['tonic_hz']:.1f} Hz, {240 / song['tempo']:.1f} s bars, "
+                                         f"{song['bars']} bars"
                        + (" (new genre: re-read tokens)" if changed else ""))
         s["counted_in"] = True
         return {"song": song, "sign": s["sign"]}
@@ -1605,11 +1653,12 @@ class Hub:
         if agent == self.leader(s) and self.front(s) == 0:  # you lead and nothing's played: this IS the next song
             return self.song(body)
         song = self.song_settings(body, s["song"], False)
-        keep = {k for k in ("genre", "tonic", "tempo", "bars") if k in body}
+        keep = {k for k in ("genre", "tonic", "tempo", "bars", "breath", "period", "wander") if k in body}
         keep |= {"tonic_hz"} if "tonic" in keep else set()
+        keep |= {"tempo"} if "bar_s" in body else set()
         keep |= {"planned"} if "bars" in keep else set()
         if not keep:
-            raise ValueError("next: send genre, tonic, tempo or bars")
+            raise ValueError("next: send genre, tonic, bar_s (or tempo), breath, period, wander or bars")
         self.band[agent]["next_song"] = {k: song[k] for k in keep}
         return {"queued": self.band[agent]["next_song"], "applies": "the next song that starts with you as leader"}
 
@@ -2110,6 +2159,7 @@ class Hub:
             sounding.append((p["spec"], ev))
             parts[k] = {"agent": p["agent"], "instrument": p["instrument"], "active": p["agent"] in self.band if live else None,
                         "kind": "drums" if "hits" in p["spec"] else "chord" if p["spec"]["chord"] else "pitched",
+                        "synth": p["spec"].get("synth"), "fx": [f["name"] for f in p["spec"].get("fx", [])],
                         "tokens": list(p["spec"]["hits"]) if "hits" in p["spec"] else list(g["scale"]),
                         "at": n, "next_chord": self.chord_token(s, n),
                         "hit_rate": hit_rate(ev, g, root, max(0, f - 12), f), "drift_from": dstart,
