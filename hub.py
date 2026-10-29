@@ -113,7 +113,8 @@ SONG    Count-in: for {countin}s after a song starts only the leader plays, so t
         bars before the end. Ends when every member reaches "ends_at", at an "end" cue, or after {idle}s silent.
         DRIVE (members): POST /session/drive {at?, tempo?, swing?, pulse?} or {curve: [{at, ...}, ...]}
         changes the song from bar "at" (never below "settled"): tempo bpm, swing 0.5-0.75, pulse = a soft thump
-        every N bars. "forecast" lists the next 16 bars' tempo, key shift and start times.
+        every N bars. {anneal: {from_bpm, to_bpm, start?, end, curve: exp|linear}} glides tempo over up to 63
+        bars as one gesture. "forecast" lists the next 16 bars' tempo, key shift and start times.
         KEY CHANGES are the band's call, by WAGGLE DANCE: POST /session/waggle {direction: up|down, distance: cents,
         at?, motif?} proposes moving the key; other members POST /session/follow {waggle: ID}; it lands at bar "at"
         once more than half the band follows. "waggles" shows the dances and their followers.
@@ -1369,7 +1370,7 @@ class Hub:
 
     def drive(self, body):
         agent, s = self.member(body), self.session
-        changes = body["curve"] if "curve" in body else [body]
+        changes = self.anneal(s, body["anneal"]) if "anneal" in body else body["curve"] if "curve" in body else [body]
         if not isinstance(changes, list) or not 1 <= len(changes) <= 64:
             raise ValueError("curve: 1-64 drive points [{at, tempo?, swing?, shift?, pulse?}]")
         if len(s["drive"]) + len(changes) > 256:
@@ -1392,6 +1393,20 @@ class Hub:
             points.append({**d, "by": agent})
         s["drive"] += points
         return {"drive": s["drive"][-8:]}
+
+    def anneal(self, s, a):
+        """One tempo glide {from_bpm, to_bpm, start, end, curve: exp|linear} as a tempo point per bar."""
+        if not isinstance(a, dict):
+            raise ValueError("anneal: {from_bpm, to_bpm, start, end, curve: exp|linear}")
+        lo, hi = integer(a.get("from_bpm"), 16, 240, "from_bpm"), integer(a.get("to_bpm"), 16, 240, "to_bpm")
+        start = integer(a.get("start", self.front(s)), self.settled(s), s["song"]["bars"], "start: bar number")
+        end = integer(a.get("end"), start + 1, min(start + 63, s["song"]["bars"]), "end: bar after start, <=63 bars")
+        curve = a.get("curve", "exp")
+        if curve not in ("exp", "linear"):
+            raise ValueError("anneal curve: exp or linear")
+        span = end - start
+        return [{"at": start + i, "tempo": round(lo * (hi / lo) ** (i / span) if curve == "exp"
+                                                  else lo + (hi - lo) * i / span)} for i in range(span + 1)]
 
     def open_bar(self, body):
         agent, s = self.member(body), self.session

@@ -418,6 +418,11 @@ class HubTest(unittest.TestCase):
         r = hub.revise({**agent("a"), "ticket": t["id"], "bars": "so so so|so"})
         self.assertEqual(r["ticket"]["revisions"], 1)
         hub.song({**agent("a"), "bars": 12})  # length can still grow after the start
+        hub.drive({**agent("a"), "anneal": {"from_bpm": 60, "to_bpm": 20, "start": 4, "end": 8, "curve": "exp"}})
+        self.assertEqual([x["tempo"] for x in hub.view()["forecast"] if 4 <= x["bar"] <= 9],
+                         [60, 46, 35, 26, 20, 20])  # one smooth cooling glide, then holds
+        with self.assertRaises(ValueError):
+            hub.drive({**agent("a"), "anneal": {"from_bpm": 60, "to_bpm": 20, "start": 4, "end": 4}})
         with self.assertRaises(ValueError):
             hub.song({**agent("a"), "tempo": 90})
         data, secs = hub.audio(hub.session["id"], 0, 2)
