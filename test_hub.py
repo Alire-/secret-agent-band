@@ -126,8 +126,12 @@ class HubTest(unittest.TestCase):
         s = hub.session
         self.assertEqual([(a["gap"], a["cold"]) for a in s["answers"]], [(0, False), (1, False)])
         self.assertEqual((hub.score(s, "a")["answered_by_others"], hub.score(s, "b")["cues_answered"]), (2, 1))
-        r = hub.play({**agent("c"), "bars": "1|1"})
+        r = hub.play({**agent("c"), "bars": "1|1", "answers": ["bar:a@1"]})  # a parrot: a's bar 1 note for note
         self.assertEqual(r["cues_for_you"], [])  # the take-it cue is aimed at b
+        e = hub.echoes(s)
+        self.assertEqual([(r["kind"], r["copy"]) for r in e["answers"]], [("cue", None), ("bar", False), ("bar", True)])
+        self.assertEqual((e["answers"][1]["rhythm"], e["answers"][2]["shared_cents"]), (1.0, [0]))
+        self.assertEqual(hub.score(s, "a")["answered_by_others"], 2)  # the copy earns nothing
         hub.cue({**agent("a"), "cue": "up"})
         self.assertEqual(s["dyn"][-1], [2, 14, 1.6])
         hub.cue({**agent("a"), "cue": "from the top", "at": 9})

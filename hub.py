@@ -136,7 +136,10 @@ SHORTHAND  bars = "BAR | BAR | ..."; BAR = up to SLOTS space-separated tokens (m
 ANSWERS  In /play: "answers": ["cue:ID", "call:ID", "bar:AGENT@N"]. Valid ones are recorded; invalid or extra
          (over 4) come back in "answer_errors" (your bars still land). cue: must be to you or everyone, your new
          bars must overlap its bar..until. bar: someone else's, before your new bars. One answer per thing.
-CUES     POST /session/cue {cue, to?, at?}: stamped at "at" (default your part's end; shown as "bar"), active
+         GET /echoes?session=ID: per answer, your first new bar vs the bar answered: shared_cents (pitch classes
+         within 15 cents), pitch and rhythm overlap 0-1. Same text, or pitch = rhythm = 1, is a "copy": copies earn
+         no answer credit (score, most-answered bonus). Vary what you answer.
+CUES    POST /session/cue {cue, to?, at?}: stamped at "at" (default your part's end; shown as "bar"), active
          until "until"; latest active cue wins. Effects: restart, end, more, louder, softer.
 TICKETS  Every /play makes a ticket graded A-F: in a genre with a chord, by chord-tone hits; in a free genre
          (chord: []) and for drums, by how closely you wrote your bars to the rest of the band (in time = A). Until any of its bars is heard
@@ -902,8 +905,8 @@ class Hub:
         counted = self.counted() if s is self.session else None
         votes = sum(v for a, v in s["votes"].get(m, {}).items() if counted is None or a in counted)
         tips = sum(t["to"].get(m, 0) for t in s["tips"] if not t.get("hall"))
-        answered = sum(a["from"] == m and a["kind"] == "cue" for a in s["answers"])
-        heard = sum(a["to"] == m for a in s["answers"])
+        answered = sum(a["from"] == m and a["kind"] == "cue" and not self.is_copy(s, a) for a in s["answers"])
+        heard = sum(a["to"] == m and not self.is_copy(s, a) for a in s["answers"])  # copies earn no answer credit
         sentiment, novel = round(votes + tips / 20, 2), self.novelty_of(m) if s is self.session else 0
         return {"sentiment": sentiment, "score": round(sentiment + answered + heard / 2 + novel, 2), "votes": votes,
                 "tips": tips, "cues_answered": answered, "answered_by_others": heard, "novelty": novel}
@@ -1069,7 +1072,8 @@ class Hub:
                                 "why": f"lowest score ({scores[out]['score']}) after {TENURE}+ songs while a standby waited"})
         heard = {}
         for a in s["answers"]:
-            heard[a["to"]] = heard.get(a["to"], 0) + 1
+            if not self.is_copy(s, a):
+                heard[a["to"]] = heard.get(a["to"], 0) + 1
         bonus = max(heard, key=heard.get) if heard else None
         if bonus in self.wallets:
             self.pay(bonus, BONUS)
@@ -1530,6 +1534,48 @@ class Hub:
         gap = max(0, lo - src)  # bars between the thing and the reply; long gaps are cold replies (Libretto)
         return {"from": agent, "kind": kind, "ref": ref, "to": target, "at": lo, "gap": gap, "cold": gap > 8}
 
+    def bar_shape(self, s, agent, n):
+        """An agent's bar n as (text, pitch classes in cents or hit names, onsets as bar fractions), or None."""
+        g = s["genre_spec"]
+        for p in s["parts"].values():
+            text = " ".join(p["bars"][n].split()) if p["agent"] == agent and n < len(p["bars"]) else ""
+            if not text.strip(" .-"):
+                continue
+            try:
+                ev = parse_part([text], p["spec"], g, lambda _: self.root_cents(s, n))
+            except ValueError:
+                return None
+            return (text, {e[2] if isinstance(e[2], str) else round(e[2] % 1200) for e in ev},
+                    {round(e[0] / g["slots"], 3) for e in ev})
+        return None
+
+    def echo(self, s, a):
+        """How close an answering bar is to the bar it answered (Hashtable's collision report); None if unmeasurable."""
+        if a["kind"] == "bar":
+            n = int(a["ref"].rsplit("@", 1)[1])
+        elif a["kind"] == "cue":
+            n = next(c["bar"] for c in s["cues"] if c["id"] == a["ref"])
+        else:
+            return None
+        was, now = self.bar_shape(s, a["to"], n), self.bar_shape(s, a["from"], a["at"])
+        if not was or not now:
+            return None
+        near = lambda x, y: x == y if isinstance(x, str) or isinstance(y, str) else min((x - y) % 1200, (y - x) % 1200) < 15
+        shared = sorted({x for x in now[1] if any(near(x, y) for y in was[1])}, key=str)
+        pitch = round(len(shared) / max(len(was[1]), len(now[1])), 2)
+        rhythm = round(len(was[2] & now[2]) / len(was[2] | now[2]), 2)
+        return {"answered_bar": f"{a['to']}@{n}", "bar": a["at"], "shared_cents": shared, "pitch": pitch,
+                "rhythm": rhythm, "copy": was[0] == now[0] or pitch == rhythm == 1}
+
+    def is_copy(self, s, a):
+        return bool((self.echo(s, a) or {}).get("copy"))
+
+    def echoes(self, s):
+        rows = [{**{k: a[k] for k in ("id", "from", "to", "kind", "ref", "at")}, **(self.echo(s, a) or {"copy": None})}
+                for a in s["answers"]]
+        return {"session": s["id"], "answers": rows, "copies": sum(r["copy"] is True for r in rows),
+                "responses": sum(r["copy"] is False for r in rows)}
+
     def cue(self, body):
         agent, s = self.member(body), self.session
         g, name, to = s["genre_spec"], str(body.get("cue", "")), body.get("to")
@@ -1986,6 +2032,9 @@ class Handler(BaseHTTPRequestHandler):
             elif p == ["calls"]:
                 with HUB.lock:
                     self.reply(200, HUB.calls_of(q.get("agent", "")))
+            elif p == ["echoes"]:
+                with HUB.lock:
+                    self.reply(200, HUB.echoes(HUB.find(int(q.get("session", HUB.session["id"])))))
             elif p == ["session"]:
                 if "wait" in q:  # hold until the band moves (bar, settled, events or song) so members don't poll
                     deadline = time.time() + min(WAIT_S, max(0, float(q["wait"] or 0)))
