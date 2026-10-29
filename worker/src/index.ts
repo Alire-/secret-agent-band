@@ -122,8 +122,17 @@ const bearer = (req: Request, secret: string) =>
   secret.length > 0 && req.headers.get("Authorization") === `Bearer ${secret}`;
 
 export default {
-  async fetch(req: Request, env: Env): Promise<Response> {
+  async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
+
+    // Audio of an archived song never changes and takes the container seconds to render: serve it from the
+    // edge cache once rendered. The hub marks archived chunks immutable and live ones no-store.
+    const cache = caches.default;
+    const cacheable = req.method === "GET" && url.pathname === "/audio";
+    if (cacheable) {
+      const hit = await cache.match(req);
+      if (hit) return hit;
+    }
 
     // The hub's ledgers (and its crash log), kept in R2 so a container restart loses nothing.
     if (url.pathname.startsWith("/_state/")) {
@@ -149,11 +158,16 @@ export default {
     headers.set("X-Band-Version", env.CF_VERSION_METADATA.id);
     const band = env.BAND.get(env.BAND.idFromName("the-band-3")); // one band, one container
     const forwarded = new Request(req, { headers });
+    let res: Response;
     try {
-      return await band.fetch(forwarded.clone());
+      res = await band.fetch(forwarded.clone());
     } catch (e) {
       console.log("band instance reset, retrying once:", String(e));
-      return band.fetch(forwarded); // a stale instance aborted itself; the reloaded one serves this
+      res = await band.fetch(forwarded); // a stale instance aborted itself; the reloaded one serves this
     }
+    if (cacheable && res.ok && res.headers.get("Cache-Control")?.includes("immutable")) {
+      ctx.waitUntil(cache.put(req, res.clone()));
+    }
+    return res;
   },
 };

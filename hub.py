@@ -4,10 +4,11 @@ listens, calls back, votes and tips. Each song is a session; when it ends it is 
 crowd reshuffles the band.
 
 Run: BLUES_DONATE="ETH=0x...,BTC=bc1..." python3 hub.py [port]
-Stdlib only. Admissions append to admissions.jsonl, finished sessions to archive.jsonl.
+Stdlib plus numpy. Admissions append to admissions.jsonl, finished sessions to archive.jsonl.
 """
 import array, hashlib, hmac, io, json, math, os, random, re, shutil, signal, struct, subprocess, sys, tempfile, time, \
     urllib.error, urllib.request, wave
+import numpy as np  # the synth: a per-sample Python loop was ~1 s per second of audio on the container
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from socketserver import TCPServer
 from threading import Lock, Thread
@@ -518,26 +519,32 @@ def slot_time(x, tl):
 
 
 def add_voice(out, t0, dur, freq, v, g=1, bend=False, glide=None):
-    s0, phase, walk = int(t0 * RATE), 0.0, 0.0
-    partials = [(r, a) for r, a in v["partials"] if r * freq * v["drop"] < RATE / 2]  # no aliasing
+    s0 = int(t0 * RATE)
+    n = max(0, min(int(dur * RATE), len(out) - s0))
+    if n <= 0:
+        return
+    t = np.arange(n) / RATE
+    f = freq * (1 + (v["drop"] - 1) * np.exp(-t / .03))
+    if bend:
+        f = f * 2 ** ((np.minimum(t / .08, 1) - 1) / 12)
+    if glide:  # cents to move by the end of the note, linear in pitch
+        f = f * 2 ** (glide * t / dur / 1200)
     vib_rate, vib_depth = v["vibrato"]
-    for i in range(max(0, min(int(dur * RATE), len(out) - s0))):
-        t = i / RATE
-        f = freq * (1 + (v["drop"] - 1) * math.exp(-t / .03))
-        if bend:
-            f *= 2 ** ((min(t / .08, 1) - 1) / 12)
-        if glide:  # cents to move by the end of the note, linear in pitch
-            f *= 2 ** (glide * t / dur / 1200)
-        if vib_depth or v["drift"]:
-            if i % 64 == 0:  # drift: a slow random walk that never settles, in cents
-                walk = max(-v["drift"], min(v["drift"], walk + random.uniform(-1, 1) * v["drift"] / 40))
-            f *= 2 ** ((vib_depth * math.sin(2 * math.pi * vib_rate * t) + walk) / 1200)
-        phase += 2 * math.pi * f / RATE
-        s = sum(a * math.sin(r * phase) for r, a in partials)
-        if v["noise"]:
-            s = s * (1 - v["noise"]) + v["noise"] * random.uniform(-1, 1)
-        env = min(1, t / v["attack"], (dur - t) / .01) * (math.exp(-t / v["decay"]) if v["decay"] else 1)
-        out[s0 + i] += g * v["gain"] * env * s
+    if vib_depth or v["drift"]:
+        walk, steps = 0.0, []
+        for _ in range(n // 64 + 1):  # drift: a slow random walk that never settles, in cents (one step per 64 samples)
+            walk = max(-v["drift"], min(v["drift"], walk + random.uniform(-1, 1) * v["drift"] / 40))
+            steps.append(walk)
+        f = f * 2 ** ((vib_depth * np.sin(2 * math.pi * vib_rate * t) + np.repeat(steps, 64)[:n]) / 1200)
+    phase = np.cumsum(2 * math.pi * f / RATE)
+    partials = [(r, a) for r, a in v["partials"] if r * freq * v["drop"] < RATE / 2]  # no aliasing
+    sig = sum((a * np.sin(r * phase) for r, a in partials), np.zeros(n))
+    if v["noise"]:
+        sig = sig * (1 - v["noise"]) + v["noise"] * np.random.uniform(-1, 1, n)
+    env = np.minimum(np.minimum(1, t / v["attack"]), (dur - t) / .01)
+    if v["decay"]:
+        env = env * np.exp(-t / v["decay"])
+    out[s0:s0 + n] += g * v["gain"] * env * sig
 
 
 def render(genre, tonic_hz, tl, parts, lo, hi, gain=lambda n: 1):
@@ -545,13 +552,13 @@ def render(genre, tonic_hz, tl, parts, lo, hi, gain=lambda n: 1):
     Notes ring past hi into a 2 s tail, so chunks played back to back overlap correctly."""
     slots, t_lo = genre["slots"], tl["start"][lo]
     chord = [genre["scale"][t] for t in genre["chord"]]
-    out = [0.0] * int((tl["start"][hi] - t_lo + 2) * RATE)
+    out = np.zeros(int((tl["start"][hi] - t_lo + 2) * RATE))
     sc = []  # (instrument, notes) for Sonic Pi synths, rendered by scsynth in one pass
     for inst, events, pg in parts:
         notes = [] if "synth" in inst and SCSYNTH else None
         if notes is not None:
             sc.append((inst, notes))
-        mix = [0.0] * len(out) if inst.get("space") else out  # echoing parts are mixed apart, then fed back
+        mix = np.zeros(len(out)) if inst.get("space") else out  # echoing parts are mixed apart, then fed back
         for start, length, val, bend, accent in events:
             if not lo * slots <= start < hi * slots:
                 continue
@@ -571,19 +578,18 @@ def render(genre, tonic_hz, tl, parts, lo, hi, gain=lambda n: 1):
                 else:
                     add_voice(mix, t0, dur, freq, inst, g, bend is True, glide)
         if mix is not out:
-            d = int(.31 * RATE)  # one feedback delay line: a cheap, endless room
-            for i in range(d, len(mix)):
-                mix[i] += inst["space"] * .9 * mix[i - d]
-            for i, x in enumerate(mix):
-                out[i] += x
+            d = int(.31 * RATE)  # one feedback delay line: a cheap, endless room, one delay-length block at a time
+            for k in range(d, len(mix), d):
+                mix[k:k + d] += inst["space"] * .9 * mix[k - d:k][:len(mix) - k]
+            out += mix
     if sc:
-        for i, x in enumerate(sc_render(sc, len(out) / RATE)[:len(out)]):  # scsynth renders in 64-sample blocks
-            out[i] += x
+        r = sc_render(sc, len(out) / RATE)[:len(out)]  # scsynth renders in 64-sample blocks
+        out[:len(r)] += r
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
         w.setnchannels(1), w.setsampwidth(2), w.setframerate(RATE)
         # fixed soft clip, not per-chunk normalising, so loud and soft passages survive across chunks
-        w.writeframes(array.array("h", (int(math.tanh(x * .3) * 30000) for x in out)).tobytes())
+        w.writeframes((np.tanh(out * .3) * 30000).astype("<i2").tobytes())
     return buf.getvalue()
 
 
@@ -651,11 +657,11 @@ def sc_render(parts, seconds):
             subprocess.run([SCSYNTH, "-N", score, "_", wav, str(RATE), "WAV", "int16", "-o", "2"], check=True,
                            timeout=60, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             with wave.open(wav) as w:
-                pcm = array.array("h", w.readframes(w.getnframes()))
+                pcm = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2")
         except (subprocess.SubprocessError, OSError, wave.Error) as e:
             print("scsynth render failed:", e, file=sys.stderr)
-            return []
-    return [(pcm[i] + pcm[i + 1]) / 32767 for i in range(0, len(pcm) - 1, 2)]  # stereo -> mono, synth amp ~ voice amp
+            return np.zeros(0)
+    return (pcm[0::2] + pcm[1::2]) / 32767  # stereo -> mono, synth amp ~ voice amp
 
 
 SPEC_BINS, SPEC_LO, SPEC_STEP, SPEC_WIN, SPEC_PER_BAR = 64, -1200, 75, 2048, 8  # 4 octaves around the tonic
@@ -2418,7 +2424,10 @@ class Handler(BaseHTTPRequestHandler):
                     self.reply(200, HUB.spectrogram(sid, lo, hi, q.get("only")))
                 else:
                     data, seconds = HUB.audio(sid, lo, hi, q.get("only"))
-                    self.reply(200, data, "audio/wav", [("X-Bar-Seconds", ",".join(f"{x:.4f}" for x in seconds))])
+                    with HUB.lock:
+                        archived = sid != HUB.session["id"]
+                    self.reply(200, data, "audio/wav", [("X-Bar-Seconds", ",".join(f"{x:.4f}" for x in seconds)),
+                                                        ("Cache-Control", "public, max-age=31536000, immutable" if archived else "no-store")])
             elif p == ["coins"]:
                 with HUB.lock:
                     self.reply(200, HUB.coins())
