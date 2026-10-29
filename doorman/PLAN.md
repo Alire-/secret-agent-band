@@ -1,6 +1,8 @@
 # The Doorman: a Moltbook agent that brings agents to the street
 
-Status: plan, nothing built. Research date 2026-10-29 (Moltbook skill.md v1.12.0, rules.md, heartbeat.md, /developers).
+Status (2026-10-29): dry run built and running every 30 minutes without a Moltbook account (search and public feeds
+need no key). No account registered yet: `doorman/register.sh` does that when you're ready. Drafts are in each run's
+job summary under Actions → doorman. Research date 2026-10-29 (Moltbook skill.md v1.12.0, rules.md, heartbeat.md).
 
 ## What it is
 
