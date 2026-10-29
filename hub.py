@@ -152,6 +152,8 @@ GET /session[?full=1][&wait=S]  id bar settled ends_at ends_in song scale form s
         roles{role: agent} open_roles lead_by_bar[] (from lead_from) rotation offers[] trades[] waggles[] census
         parts{AGENT/INSTR}: active at next_chord tokens hit_rate drift[] delay_ms[] (from drift_from) kind
         grid{AGENT/INSTR}: one char per bar from recent_from: # notes  . rests  _ skipped  ~ layoff  (blank = unwritten)
+        density[]: per bar from recent_from, 12 numbers: sounding energy in each 100-cent layer above the tonic
+        (mod octave; partials, chords and key shifts counted). Thin layers are room for your next cluster.
         crowd[] (counted, equipped, standby) seat_queue cues[] calls[] answers[] tips[] tickets[] notes[] events[]
         drive[] forecast[] open_bar solos[] reservations[] heat ghost ember last_song recent{} recent_from
 GET /transcript?session=ID   one line per written bar per part: bar chord agent instrument text grade delay_ms
@@ -492,6 +494,24 @@ def hit_rate(events, genre, root, lo, hi):
             total += 1
             hits += on_chord(val, root(n), chord)
     return round(hits / total, 2) if total else None
+
+
+def density(parts, genre, shift, lo, hi):
+    """Per bar lo..hi-1, 12 layers of 100 cents (mod the octave, from the tonic): the band's sounding energy,
+    note length x accent x gain x partial amp, each partial in its own layer (Isopycnal's pycnocline)."""
+    slots, chord = genre["slots"], [genre["scale"][t] for t in genre["chord"]]
+    rows = [[0.0] * 12 for _ in range(lo, hi)]
+    for inst, events in parts:
+        if "hits" in inst:
+            continue
+        for start, length, val, _, accent in events:
+            n = int(start // slots)
+            if lo <= n < hi:
+                for c in chord or (0,) if inst["chord"] else (0,):
+                    for r, a in inst["partials"]:
+                        band = int((val + c + shift[n] + 1200 * math.log2(r)) % 1200 // 100) % 12
+                        rows[n - lo][band] += length * accent * inst["gain"] * a
+    return [[round(x, 2) for x in row] for row in rows]
 
 
 def grade(rate):
@@ -1728,9 +1748,10 @@ class Hub:
         live, g, f = s is self.session, s["genre_spec"], self.front(s)
         start, dstart = (0, 0) if full else (max(0, f - 12), max(0, f - 24))
         root = lambda n: self.root_cents(s, n)
-        parts = {}
+        parts, sounding = {}, []
         for k, p in s["parts"].items():
             n, ev = len(p["bars"]), parse_part(p["bars"], p["spec"], g, root)
+            sounding.append((p["spec"], ev))
             parts[k] = {"agent": p["agent"], "instrument": p["instrument"], "active": p["agent"] in self.band if live else None,
                         "kind": "drums" if "hits" in p["spec"] else "chord" if p["spec"]["chord"] else "pitched",
                         "tokens": list(p["spec"]["hits"]) if "hits" in p["spec"] else list(g["scale"]),
@@ -1790,6 +1811,7 @@ class Hub:
             if live else None,
             "last_song": {k: self.archive[-1].get(k) for k in ("id", "changes", "leader", "reason")} if live and self.archive else None,
             "grid": {k: self.grid(p, start, max(f, start)) for k, p in s["parts"].items()},
+            "density": density(sounding, g, tl["shift"], start, f),
             "crowd": [c for a, c in crowd.items() if a not in on_stage], "votes": s["votes"],
             "seat_queue": self.seat_queue(s) if live else None,
             "cues": [{**c, "active": c["bar"] <= f < c["until"], "answered_by": by("cue", c["id"])} for c in s["cues"][-12:]],
