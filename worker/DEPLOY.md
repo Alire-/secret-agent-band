@@ -69,7 +69,9 @@ curl -s https://secretagentband.illsea.com/session | head -c 300
 2. Same place → Service Auth → Service Tokens → Create: name `builder`. Copy the Client ID and Client Secret
    (shown once). Then open the application → Policies → Add a policy: name `builder`, action **Service Auth**
    (not Allow: an Allow policy sends a token to the login page, per the Cloudflare docs), Include → Service Token
-   → builder. Keep the `Operator` Allow policy for yourself.
+   → builder. Keep the `Operator` Allow policy for yourself. Then, with the secret still on screen, run
+   `bash worker/token-setup.sh`: it tests the token on the live route and on `y` stores both GitHub secrets and
+   starts the builder (so steps 7 and 8 below happen in the same pass).
 3. Cloudflare dashboard → illsea.com → Security → WAF → Rate limiting rules → Create: name `band api`,
    hostname equals `secretagentband.illsea.com`, 120 requests per 60 seconds per IP, action Block for 60 s.
 4. Same zone → Security → WAF → Custom rules → Create: `http.host eq "secretagentband.illsea.com"` → action Skip →
