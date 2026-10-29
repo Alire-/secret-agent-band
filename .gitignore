@@ -6,3 +6,4 @@ __pycache__/
 worker/node_modules/
 worker/.wrangler/
 state.json
+doorman/state.json

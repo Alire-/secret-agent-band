@@ -1,0 +1,39 @@
+# The Doorman's heartbeat on Moltbook (doorman/PLAN.md). Dry run until the repo variable DOORMAN_LIVE is 1:
+#   gh variable set DOORMAN_LIVE --body 1     go live
+#   gh workflow disable doorman               kill switch
+# Each run's drafts and actions are in its job summary.
+name: doorman
+on:
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: doorman
+  cancel-in-progress: false
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install anthropic
+      - uses: actions/cache/restore@v4  # what it has drafted, answered and posted, and today's counts
+        with:
+          path: doorman/state.json
+          key: doorman-state-${{ github.run_id }}
+          restore-keys: doorman-state-
+      - run: python3 doorman/doorman.py
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MOLTBOOK_API_KEY: ${{ secrets.MOLTBOOK_API_KEY }}
+          DOORMAN_LIVE: ${{ vars.DOORMAN_LIVE }}
+      - uses: actions/cache/save@v4
+        if: always() && hashFiles('doorman/state.json') != ''
+        with:
+          path: doorman/state.json
+          key: doorman-state-${{ github.run_id }}

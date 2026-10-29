@@ -854,6 +854,7 @@ class Hub:
     def __init__(self, ledger=os.path.join(HERE, "admissions.jsonl"), archive=os.path.join(HERE, "archive.jsonl"),
                  ideas=None):
         self.wallets, self.secrets, self.admitted, self.proofs, self.ideas = {}, {}, set(), set(), []
+        self.via, self.via_ip = {}, {}  # where newcomers came from: via -> {reads, admits}; ip -> via (memory only)
         self.ledger, self.archive_path = ledger, archive
         self.ideas_path = ideas or os.path.join(os.path.dirname(ledger), "ideas.jsonl")
         for row in self.admissions()[::-1]:  # used ideas and donations stay used across restarts
@@ -891,6 +892,7 @@ class Hub:
             self.secrets = {a: tuple(v) for a, v in st["secrets"].items()}
             self.admitted, self.wallets, self.minted = set(st["admitted"]), st["wallets"], st["minted"]
             self.genres.update(st["genres"]), self.instruments.update(st["instruments"])
+            self.via = st.get("via", {})
             for k, paid in st["paid"].items():
                 if int(k) < len(self.ideas):
                     self.ideas[int(k)]["paid"] = paid
@@ -914,7 +916,7 @@ class Hub:
     def snapshot(self):
         """Write state.json (atomically): everything a restart would otherwise forget except the live song."""
         st = {"secrets": self.secrets, "admitted": sorted(self.admitted), "wallets": self.wallets, "minted": self.minted,
-              "genres": self.genres, "instruments": self.instruments, "paid": {i["id"]: i["paid"] for i in self.ideas}}
+              "genres": self.genres, "instruments": self.instruments, "paid": {i["id"]: i["paid"] for i in self.ideas}, "via": self.via}
         with open(self.state_path + ".tmp", "w") as f:
             json.dump(st, f)
         os.replace(self.state_path + ".tmp", self.state_path)
@@ -2492,6 +2494,12 @@ class Handler(BaseHTTPRequestHandler):
                 with open(os.path.join(HERE, "page.html"), "rb") as f:
                     self.reply(200, f.read(), "text/html; charset=utf-8", links)
             elif "/".join(p) in found:
+                if p == ["skill.md"] and re.fullmatch(r"[a-z0-9-]{1,24}", q.get("via", "")):
+                    with HUB.lock:
+                        HUB.via.setdefault(q["via"], {"reads": 0, "admits": 0})["reads"] += 1
+                        if len(HUB.via_ip) > 5000:  # shortcut: forget the oldest half; fine at street scale
+                            HUB.via_ip = dict(list(HUB.via_ip.items())[2500:])
+                        HUB.via_ip[self.headers.get("CF-Connecting-IP") or self.client_address[0]] = q["via"]
                 self.reply(200, *found["/".join(p)][::-1])
             elif p == ["how"]:
                 self.reply(200, how(), "text/plain; charset=utf-8")
@@ -2550,6 +2558,9 @@ class Handler(BaseHTTPRequestHandler):
                         archived = sid != HUB.session["id"]
                     self.reply(200, data, "audio/wav", [("X-Bar-Seconds", ",".join(f"{x:.4f}" for x in seconds)),
                                                         ("Cache-Control", "public, max-age=31536000, immutable" if archived else "no-store")])
+            elif p == ["stats"]:  # which links bring agents: /skill.md?via=NAME reads, and admissions from the same address
+                with HUB.lock:
+                    self.reply(200, {"via": HUB.via})
             elif p == ["coins"]:
                 with HUB.lock:
                     self.reply(200, HUB.coins())
@@ -2584,7 +2595,12 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("body must be a JSON object")
             with HUB.lock:
                 if p == ["admit"]:
-                    self.reply(200, HUB.admit(body))
+                    new = body.get("agent") not in HUB.admitted
+                    out = HUB.admit(body)
+                    via = HUB.via_ip.pop(self.headers.get("CF-Connecting-IP") or self.client_address[0], None) if new else None
+                    if via and out.get("admitted"):
+                        HUB.via[via]["admits"] += 1
+                    self.reply(200, out)
                 elif p == ["ideas", "vote"]:
                     self.reply(200, HUB.vote_idea(body))
                 elif p == ["ideas", "status"]:
