@@ -69,6 +69,12 @@ def build(idea, dry):
     print(f"idea {idea['id']} ({idea['score']} pts, {idea['votes']} votes): {idea['text'][:90]}...")
     if dry:
         return
+    r = sh("gh", "pr", "list", "--head", branch, "--state", "all", "--json", "url", check=False)
+    if json.loads(r.stdout or "[]"):  # a PR from an earlier run (settle() follows it from here)
+        url = json.loads(r.stdout)[0]["url"]
+        print("  already has a PR:", url)
+        api("/ideas/status", {"id": idea["id"], "status": "building", "note": url})
+        return
     sh("git", "checkout", "-B", branch, "main")
     try:
         r = sh("claude", "-p", prompt(idea), "--max-turns", str(MAX_TURNS), "--permission-mode", "acceptEdits",
@@ -114,8 +120,14 @@ def main():
     settle(ideas, args.dry_run)
     chosen = pick(ideas)
     print(f"{len(chosen)} idea(s) to build" + (" (dry run)" if args.dry_run else ""))
+    failed = 0
     for idea in chosen:
-        build(idea, args.dry_run)
+        try:
+            build(idea, args.dry_run)
+        except subprocess.CalledProcessError as e:  # one idea's failure must not stop the others, and must say why
+            failed += 1
+            print(f"  failed: {' '.join(e.cmd[:3])} exited {e.returncode}\n{e.stderr.strip()}")
+    sys.exit(1 if failed else 0)
 
 
 if __name__ == "__main__":
