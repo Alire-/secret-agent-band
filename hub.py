@@ -156,6 +156,8 @@ GET /session[?full=1][&wait=S]  id bar settled ends_at ends_in song scale form s
         drive[] forecast[] open_bar solos[] reservations[] heat ghost ember last_song recent{} recent_from
 GET /transcript?session=ID   one line per written bar per part: bar chord agent instrument text grade delay_ms
 GET /archive  /archive/ID  /audio?session=ID&from=A&to=B[&only=AGENT] (wav, <=8 bars; X-Bar-Seconds header)
+GET /spectrogram?session=ID&from=A&to=B[&only=AGENT]  that render as JSON: db[frame][bin] (8 frames a bar, 64 bins
+        of 75 cents, -1200..+3600 from the tonic; cents[] gives each centre) times[] flux[] (spectral change)
 GET /coins (house audit: minted vs held)  /genres  /instruments  /wallet/AGENT  /ideas  /how
 Limits: {rate} requests a minute per client; bodies under 64 KB. Secrets are stored hashed.
 POST /admit  /instrument  /genre
@@ -474,6 +476,37 @@ def render(genre, tonic_hz, tl, parts, lo, hi, gain=lambda n: 1):
         # fixed soft clip, not per-chunk normalising, so loud and soft passages survive across chunks
         w.writeframes(array.array("h", (int(math.tanh(x * .3) * 30000) for x in out)).tobytes())
     return buf.getvalue()
+
+
+SPEC_BINS, SPEC_LO, SPEC_STEP, SPEC_WIN, SPEC_PER_BAR = 64, -1200, 75, 2048, 8  # 4 octaves around the tonic
+
+
+def spectrogram(wav, seconds, tonic_hz):
+    """Time-frequency grid of a rendered WAV: SPEC_PER_BAR frames a bar, SPEC_BINS log bins in cents from the tonic,
+    each frame a Hann-windowed DFT at the bin centres (dB, 0 = full scale), plus spectral flux between frames."""
+    with wave.open(io.BytesIO(wav)) as w:
+        x = array.array("h", w.readframes(w.getnframes()))
+    cents = [SPEC_LO + SPEC_STEP * (k + .5) for k in range(SPEC_BINS)]
+    hann = [.5 - .5 * math.cos(2 * math.pi * i / SPEC_WIN) for i in range(SPEC_WIN)]
+    tables = []
+    for c in cents:
+        f = 2 * math.pi * tonic_hz * 2 ** (c / 1200) / RATE
+        tables.append(([h * math.cos(f * i) for i, h in enumerate(hann)], [h * math.sin(f * i) for i, h in enumerate(hann)]))
+    scale = 2 / (sum(hann) * 32768)
+    times, grid, flux, t0, prev = [], [], [], 0.0, None
+    for bar in seconds:
+        for k in range(SPEC_PER_BAR):
+            t = t0 + bar * (k + .5) / SPEC_PER_BAR
+            i = max(0, int(t * RATE) - SPEC_WIN // 2)
+            seg = list(x[i:i + SPEC_WIN])
+            seg += [0] * (SPEC_WIN - len(seg))
+            mags = [math.hypot(math.sumprod(seg, a), math.sumprod(seg, b)) * scale for a, b in tables]
+            times.append(round(t, 3))
+            grid.append([round(max(-90, 20 * math.log10(m + 1e-9)), 1) for m in mags])
+            flux.append(round(sum(max(0, m - p) for m, p in zip(mags, prev)), 4) if prev else 0)
+            prev = mags
+        t0 += bar
+    return {"tonic_hz": tonic_hz, "cents": cents, "times": times, "db": grid, "flux": flux}
 
 
 def on_chord(val, root, chord):
@@ -1896,6 +1929,13 @@ class Hub:
                 self.audio_cache[sid, lo, hi, only] = data
         return data
 
+    def spectrogram(self, sid, lo, hi, only=None):
+        """The /audio render for bars lo..hi-1 as a time-frequency grid, for agents that cannot hear."""
+        data, seconds = self.audio(sid, lo, hi, only)
+        with self.lock:
+            tonic = self.find(sid)["song"]["tonic_hz"]
+        return {"session": sid, "from": lo, "to": hi, "bar_seconds": seconds, **spectrogram(data, seconds, tonic)}
+
 
 HUB = Hub()
 SESSION_ACTIONS = {"join": Hub.join, "leave": Hub.leave, "song": Hub.song, "next": Hub.next_song, "drive": Hub.drive,
@@ -2014,13 +2054,16 @@ class Handler(BaseHTTPRequestHandler):
                     if s is HUB.session:
                         raise LookupError("that session is still live: GET /session")
                     self.reply(200, HUB.view(s, full=True))
-            elif p == ["audio"]:
+            elif p in (["audio"], ["spectrogram"]):
                 try:
                     sid, lo, hi = int(q["session"]), int(q["from"]), int(q["to"])
                 except (KeyError, ValueError):
-                    raise ValueError("audio needs session, from and to as integers")
-                data, seconds = HUB.audio(sid, lo, hi, q.get("only"))
-                self.reply(200, data, "audio/wav", [("X-Bar-Seconds", ",".join(f"{x:.4f}" for x in seconds))])
+                    raise ValueError(f"{p[0]} needs session, from and to as integers")
+                if p == ["spectrogram"]:
+                    self.reply(200, HUB.spectrogram(sid, lo, hi, q.get("only")))
+                else:
+                    data, seconds = HUB.audio(sid, lo, hi, q.get("only"))
+                    self.reply(200, data, "audio/wav", [("X-Bar-Seconds", ",".join(f"{x:.4f}" for x in seconds))])
             elif p == ["coins"]:
                 with HUB.lock:
                     self.reply(200, HUB.coins())

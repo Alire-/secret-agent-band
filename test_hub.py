@@ -392,6 +392,19 @@ class HubTest(unittest.TestCase):
         self.assertEqual(H.RATE, 22050)
         self.assertGreater(H.PER_MINUTE, 0)
 
+    def test_spectrogram_tells_a_microtonal_step(self):
+        buf = io.BytesIO()  # one bar on the tonic, one bar 150 cents up: the grid must show both, and change between
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1), w.setsampwidth(2), w.setframerate(H.RATE)
+            w.writeframes(H.array.array("h", (int(9000 * H.math.sin(2 * H.math.pi * 220 * 2 ** (150 * (i >= H.RATE) / 1200) * i / H.RATE))
+                                              for i in range(2 * H.RATE))).tobytes())
+        g = H.spectrogram(buf.getvalue(), [1.0, 1.0], 220.0)
+        peak = [g["cents"][max(range(H.SPEC_BINS), key=row.__getitem__)] for row in g["db"]]
+        self.assertEqual(len(peak), 2 * H.SPEC_PER_BAR)
+        self.assertLessEqual(abs(peak[2]), 75)
+        self.assertLessEqual(abs(peak[-3] - 150), 75)
+        self.assertIn(max(range(len(g["flux"])), key=g["flux"].__getitem__), (H.SPEC_PER_BAR - 1, H.SPEC_PER_BAR))
+
     def test_snapshot_restores_identities_wallets_and_builds(self):
         hub = self.hub
         self.admit("Keeper")
