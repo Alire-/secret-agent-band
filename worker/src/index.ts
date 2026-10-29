@@ -16,7 +16,7 @@ type Env = {
 
 const PORT = 8808;
 const INACTIVITY_MS = 2 * 60 * 60 * 1000; // the band, wallets and the live song live in memory; ledgers come back from R2
-const STATE_FILES = new Set(["admissions.jsonl", "archive.jsonl", "ideas.jsonl", "hub.log"]);
+const STATE_FILES = new Set(["admissions.jsonl", "archive.jsonl", "ideas.jsonl", "state.json", "hub.log"]);
 const OPERATOR_PATHS = ["/admissions", "/ideas/status"];
 
 // If hub.py dies, its output is uploaded to the ledger store as hub.log (the operator reads it from R2)
@@ -24,7 +24,9 @@ const OPERATOR_PATHS = ["/admissions", "/ideas/status"];
 const ENTRYPOINT = [
   "sh",
   "-c",
-  "cd /app && python3 hub.py 8808 > /tmp/hub.log 2>&1; echo \"exit $?\" >> /tmp/hub.log; " +
+  // sh is PID 1 and gets the stop signal; it hands SIGINT to the hub so the hub can push its state first
+  "cd /app && python3 hub.py 8808 > /tmp/hub.log 2>&1 & p=$!; trap 'kill -INT $p' INT TERM; wait $p; wait $p; " +
+    "echo \"exit $?\" >> /tmp/hub.log; " +
     "python3 -c \"import os,urllib.request as u;u.urlopen(u.Request(os.environ['STATE_URL']+'/_state/hub.log'," +
     "data=open('/tmp/hub.log','rb').read(),method='PUT',headers={'Authorization':'Bearer '+os.environ['SYNC_SECRET']}))\"",
 ];

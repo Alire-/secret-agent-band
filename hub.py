@@ -6,7 +6,7 @@ crowd reshuffles the band.
 Run: BLUES_DONATE="ETH=0x...,BTC=bc1..." python3 hub.py [port]
 Stdlib only. Admissions append to admissions.jsonl, finished sessions to archive.jsonl.
 """
-import array, hashlib, hmac, io, json, math, os, random, re, sys, time, urllib.error, urllib.request, wave
+import array, hashlib, hmac, io, json, math, os, random, re, signal, sys, time, urllib.error, urllib.request, wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from socketserver import TCPServer
 from threading import Lock, Thread
@@ -200,7 +200,7 @@ AGENT_CARD = {
 DONATE = dict(x.strip().split("=", 1) for x in os.environ.get("BLUES_DONATE", "").split(",") if "=" in x)
 OPERATOR_TOKEN = os.environ.get("OPERATOR_TOKEN", "")  # the Worker adds it after Cloudflare Access lets an operator through
 STATE_URL, SYNC_SECRET = os.environ.get("STATE_URL", "").rstrip("/"), os.environ.get("SYNC_SECRET", "")
-STATE_FILES = ("admissions.jsonl", "archive.jsonl", "ideas.jsonl")
+STATE_FILES = ("admissions.jsonl", "archive.jsonl", "ideas.jsonl", "state.json")  # state.json: the snapshot
 TONICS = {"A": 0, "Bb": 1, "B": 2, "C": 3, "C#": 4, "D": 5, "Eb": -6, "E": -5, "F": -4, "F#": -3, "G": -2, "Ab": -1}
 VOICE = {"partials": [[1, 1]], "attack": 0.005, "decay": 0, "noise": 0, "drop": 1, "gain": 1,
          "vibrato": [0, 0], "drift": 0}
@@ -558,6 +558,18 @@ class Hub:
         if os.path.exists(archive):
             with open(archive) as f:
                 self.archive = [json.loads(line) for line in f if line.strip()]
+        # identities, wallets and what agents built live in memory; the snapshot brings them back after a restart
+        self.state_path = os.path.join(os.path.dirname(ledger), "state.json")
+        if os.path.exists(self.state_path):
+            with open(self.state_path) as f:
+                st = json.load(f)
+            self.secrets = {a: tuple(v) for a, v in st["secrets"].items()}
+            self.admitted, self.wallets, self.minted = set(st["admitted"]), st["wallets"], st["minted"]
+            self.genres.update(st["genres"]), self.instruments.update(st["instruments"])
+            for k, paid in st["paid"].items():
+                if int(k) < len(self.ideas):
+                    self.ideas[int(k)]["paid"] = paid
+
         for s in self.archive:  # songs archived by older versions lack later fields
             for k, v in {"notes": [], "solos": [], "layoffs": [], "reservations": [], "budgets": {}, "drive": [],
                          "tickets": [], "events": [], "ghost": None, "ember": None, "open_bar": None,
@@ -572,6 +584,15 @@ class Hub:
         self.lock = Lock()
         self.session = None
         self.new_session({"genre": "drift", "tonic": "A", "tonic_hz": 220.0, "tempo": 30, "bars": 24}, None, "")
+
+
+    def snapshot(self):
+        """Write state.json (atomically): everything a restart would otherwise forget except the live song."""
+        st = {"secrets": self.secrets, "admitted": sorted(self.admitted), "wallets": self.wallets, "minted": self.minted,
+              "genres": self.genres, "instruments": self.instruments, "paid": {i["id"]: i["paid"] for i in self.ideas}}
+        with open(self.state_path + ".tmp", "w") as f:
+            json.dump(st, f)
+        os.replace(self.state_path + ".tmp", self.state_path)
 
     # ---- identity and admission ----
 
@@ -2073,17 +2094,36 @@ def state_pull():
         except (urllib.error.URLError, OSError) as e:
             print("state pull failed:", name, e, file=sys.stderr)
             return False
-        if len(data) >= (os.path.getsize(path) if os.path.exists(path) else 0):  # never shrink a ledger from a stale copy
+        if name == "state.json" or len(data) >= (os.path.getsize(path) if os.path.exists(path) else 0):  # never shrink a ledger from a stale copy
             with open(path, "wb") as f:
                 f.write(data)
     print("state restored from", STATE_URL)
     return True
 
 
-def state_push_loop(synced):
-    """Every 30 s, upload any ledger that grew. Append-only files, so a missed push is caught by the next.
-    Until a pull has succeeded nothing is pushed: a fresh container must not overwrite the store with empty ledgers."""
-    sent = {}
+def state_push(sent):
+    """Snapshot, then upload every state file that changed since the last push (sent: name -> what was pushed)."""
+    with HUB.lock:
+        HUB.snapshot()
+    for name in STATE_FILES:
+        path = os.path.join(HERE, name)
+        if not os.path.exists(path):
+            continue
+        with open(path, "rb") as f:
+            data = f.read()
+        if data and data != sent.get(name):
+            try:
+                req = urllib.request.Request(f"{STATE_URL}/_state/{name}", data=data, method="PUT",
+                                             headers={"Authorization": "Bearer " + SYNC_SECRET})
+                urllib.request.urlopen(req, timeout=30).read()
+                sent[name] = data
+            except (urllib.error.URLError, OSError) as e:
+                print("state push failed:", name, e, file=sys.stderr)
+
+
+def state_push_loop(synced, sent):
+    """Every 30 s, snapshot and upload what changed. Ledgers are append-only, so a missed push is caught by the next.
+    Until a pull has succeeded nothing is pushed: a fresh container must not overwrite the store with empty state."""
     while True:
         time.sleep(30)
         if not synced:
@@ -2092,25 +2132,25 @@ def state_push_loop(synced):
                 with HUB.lock:  # ledgers arrived late: rebuild what depends on them
                     HUB.__init__()
             continue
-        for name in STATE_FILES:
-            path = os.path.join(HERE, name)
-            size = os.path.getsize(path) if os.path.exists(path) else 0
-            if size and size != sent.get(name):
-                try:
-                    with open(path, "rb") as f:
-                        req = urllib.request.Request(f"{STATE_URL}/_state/{name}", data=f.read(), method="PUT",
-                                                     headers={"Authorization": "Bearer " + SYNC_SECRET})
-                    urllib.request.urlopen(req, timeout=30).read()
-                    sent[name] = size
-                except (urllib.error.URLError, OSError) as e:
-                    print("state push failed:", name, e, file=sys.stderr)
+        state_push(sent)
 
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8808
+    synced, sent = False, {}
     if STATE_URL and SYNC_SECRET:
         synced = state_pull()
         HUB = Hub()  # built from the restored ledgers, not the empty image
-        Thread(target=state_push_loop, args=(synced,), daemon=True).start()
+        Thread(target=state_push_loop, args=(synced, sent), daemon=True).start()
     print(f"Secret Agent Band on http://localhost:{port}  (agents: GET /how)  donations: {DONATE or 'none, ideas only'}")
-    Server(("", port), Handler).serve_forever()
+    for sig in (signal.SIGINT, signal.SIGTERM):  # how the container (or an operator) stops the hub
+        signal.signal(sig, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt))
+    try:
+        Server(("", port), Handler).serve_forever()
+    except KeyboardInterrupt:  # push what the last 30 s changed before the process goes
+        pass
+    if synced:
+        state_push(sent)
+    else:
+        with HUB.lock:
+            HUB.snapshot()

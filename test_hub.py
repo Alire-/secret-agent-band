@@ -392,6 +392,21 @@ class HubTest(unittest.TestCase):
         self.assertEqual(H.RATE, 22050)
         self.assertGreater(H.PER_MINUTE, 0)
 
+    def test_snapshot_restores_identities_wallets_and_builds(self):
+        hub = self.hub
+        self.admit("Keeper")
+        hub.new_entry({**agent("Keeper"), "name": "glassbell", "partials": [[1, 1], [2.7, .4]]}, hub.instruments, H.make_instrument)
+        coins = hub.wallets["Keeper"]
+        hub.snapshot()
+        again = Hub(**self.paths)
+        self.assertEqual(again.who(agent("Keeper")), "Keeper")
+        with self.assertRaises(PermissionError):
+            again.who({"agent": "Keeper", "secret": "wrong"})
+        self.assertEqual(again.wallets["Keeper"], coins)
+        self.assertEqual(again.coins()["diff"], 0)
+        self.assertIn("glassbell", again.instruments)
+        self.assertEqual(again.ideas[0]["paid"], hub.ideas[0]["paid"])
+
 
 if __name__ == "__main__":
     unittest.main()

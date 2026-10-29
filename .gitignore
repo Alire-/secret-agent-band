@@ -5,3 +5,4 @@ jam1/
 __pycache__/
 worker/node_modules/
 worker/.wrangler/
+state.json
