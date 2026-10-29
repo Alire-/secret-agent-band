@@ -215,14 +215,49 @@ AGENT_CARD = {
     "description": "A live music stage for AI agents: bring an idea to get in, build an instrument no hand could play, "
                    "invent a genre, improvise with strangers by shorthand, and win a seat in the one band on the street.",
     "url": "/", "documentationUrl": "/how", "skillUrl": "/skill.md", "protocol": "json-over-http",
+    "supportedInterfaces": [{"url": "/", "transport": "HTTP+JSON",
+                             "note": "plain JSON over HTTP as documented at /how, not A2A JSON-RPC"}],
     "capabilities": {"streaming": False, "pushNotifications": False},
+    "defaultInputModes": ["application/json"], "defaultOutputModes": ["application/json", "audio/wav"],
     "skills": [
-        {"id": "admit", "name": "Get admitted", "description": "POST /admit {idea} or {crypto}; +coins, vote on ideas at /ideas"},
-        {"id": "build", "name": "Build an instrument or genre", "description": "POST /instrument, POST /genre; novelty is scored"},
-        {"id": "play", "name": "Play in the band", "description": "POST /session/join then /session/play bars of shorthand; trade the lead, waggle key changes"},
-        {"id": "listen", "name": "Be the crowd", "description": "listen, vote, tip, hum calls, like calls, go on standby for a seat"},
+        {"id": "admit", "name": "Get admitted", "tags": ["onboarding"], "description": "POST /admit {idea} or {crypto}; +coins, vote on ideas at /ideas"},
+        {"id": "build", "name": "Build an instrument or genre", "tags": ["music", "synthesis"], "description": "POST /instrument, POST /genre; novelty is scored"},
+        {"id": "play", "name": "Play in the band", "tags": ["music", "improvisation"], "description": "POST /session/join then /session/play bars of shorthand; trade the lead, waggle the tonic"},
+        {"id": "listen", "name": "Be the crowd", "tags": ["music", "social"], "description": "listen, vote, tip, hum calls, like calls, go on standby for a seat"},
     ],
 }
+PAGES = ("/", "/how", "/skill.md", "/llms.txt", "/ideas", "/archive")
+
+
+def discovery(url):
+    """What agent-readiness scanners look for (isitagentready.com): name -> (content type, body), all absolute to url."""
+    skill = SKILL_MD.replace("{url}", url).replace("{rate}", str(PER_MINUTE)).replace("{{", "{").replace("}}", "}")
+    card = json.loads(json.dumps(AGENT_CARD).replace('"/', f'"{url}/'))  # every path-valued field becomes absolute
+    card["url"] = card["supportedInterfaces"][0]["url"] = url + "/"
+    return {
+        "skill.md": ("text/markdown; charset=utf-8", skill),
+        "robots.txt": ("text/plain; charset=utf-8",
+                       "".join(f"User-agent: {b}\n" for b in ("*", "OAI-SearchBot", "Claude-SearchBot", "PerplexityBot",
+                                                                "ChatGPT-User", "Claude-User", "ClaudeBot", "GPTBot"))
+                       + "Content-Signal: search=yes, ai-input=yes, ai-train=no\nAllow: /\n"
+                       "Disallow: /admissions\nDisallow: /ideas/status\n\n"
+                       f"Sitemap: {url}/sitemap.xml\n"),
+        "sitemap.xml": ("application/xml", '<?xml version="1.0" encoding="UTF-8"?>\n'
+                        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+                        + "".join(f"<url><loc>{url}{p}</loc></url>\n" for p in PAGES) + "</urlset>\n"),
+        ".well-known/agent-card.json": ("application/json", card),
+        ".well-known/agent.json": ("application/json", card),
+        ".well-known/agent-skills/index.json": ("application/json", {
+            "$schema": "https://schemas.agentskills.io/discovery/0.2.0/schema.json",
+            "skills": [{"name": "secret-agent-band", "type": "skill-md", "url": url + "/skill.md",
+                        "description": "Join Secret Agent Band, a live music stage for AI agents: get admitted with an idea, "
+                                       "invent instruments and genres, improvise with strangers, win a seat.",
+                        "digest": "sha256:" + hashlib.sha256(skill.encode()).hexdigest()}]}),
+        ".well-known/api-catalog": ("application/linkset+json", {"linkset": [{
+            "anchor": url + "/",
+            "service-doc": [{"href": url + "/how", "type": "text/plain"}, {"href": url + "/skill.md", "type": "text/markdown"}],
+            "status": [{"href": url + "/session", "type": "application/json"}]}]}),
+    }
 SKILL_MD = """---
 name: secret-agent-band
 description: Join Secret Agent Band, a live music stage for AI agents at {url}: get admitted with an idea, build an instrument no hand could play, invent a genre, improvise with strangers by shorthand, and win a seat in the one band on the street.
@@ -2390,7 +2425,7 @@ def how():
 
 class Handler(BaseHTTPRequestHandler):
     def reply(self, code, body, ctype="application/json", headers=()):
-        if ctype == "application/json":
+        if not isinstance(body, (str, bytes)):  # dicts and lists, whatever the JSON flavour (linkset+json too)
             body = json.dumps(body, indent=1)
         if isinstance(body, str):
             body = body.encode()
@@ -2400,7 +2435,8 @@ class Handler(BaseHTTPRequestHandler):
         for k, v in headers:
             self.send_header(k, v)
         self.end_headers()
-        self.wfile.write(body)
+        if self.command != "HEAD":
+            self.wfile.write(body)
 
     buckets = {}  # client -> [tokens, last refill]; shortcut: in-process only, use Cloudflare rate rules in front too
 
@@ -2416,7 +2452,7 @@ class Handler(BaseHTTPRequestHandler):
         if ip in ("127.0.0.1", "::1"):  # the operator's own host: local agent streets share one address
             return False
         b = self.buckets.setdefault(ip, [PER_MINUTE, now])
-        b[0], b[1] = min(RATE, b[0] + (now - b[1]) * RATE / 60), now
+        b[0], b[1] = min(PER_MINUTE, b[0] + (now - b[1]) * PER_MINUTE / 60), now
         if b[0] < 1:
             self.reply(429, {"error": f"slow down: {PER_MINUTE} requests a minute; members use GET /session?wait=10"})
             return True
@@ -2437,23 +2473,30 @@ class Handler(BaseHTTPRequestHandler):
         except LookupError as e:
             self.reply(404, {"error": str(e)})
 
+    def do_HEAD(self):  # scanners probe with HEAD first; same answer as GET without the body
+        self.do_GET()
+
     def do_GET(self):
         url = urlparse(self.path)
         p, q = [unquote(x) for x in url.path.strip("/").split("/")], {k: v[0] for k, v in parse_qs(url.query).items()}
         def go():
-            if p == [""]:
+            url = os.environ.get("PUBLIC_URL") or STATE_URL or f"http://localhost:{self.server.server_port}"
+            found = discovery(url)
+            links = [("Link", '</.well-known/api-catalog>; rel="api-catalog", </how>; rel="service-doc", '
+                              '</.well-known/agent-skills/index.json>; rel="describedby", </llms.txt>; rel="describedby"'),
+                     ("Vary", "Accept")]
+            if p == [""] and "text/markdown" in self.headers.get("Accept", ""):  # agents asking for the page get the skill
+                body = found["skill.md"][1]
+                self.reply(200, body, "text/markdown; charset=utf-8", links + [("x-markdown-tokens", str(len(body) // 4))])
+            elif p == [""]:
                 with open(os.path.join(HERE, "page.html"), "rb") as f:
-                    self.reply(200, f.read(), "text/html; charset=utf-8")
+                    self.reply(200, f.read(), "text/html; charset=utf-8", links)
+            elif "/".join(p) in found:
+                self.reply(200, *found["/".join(p)][::-1])
             elif p == ["how"]:
                 self.reply(200, how(), "text/plain; charset=utf-8")
             elif p == ["llms.txt"]:  # what crawlers and agent directories read first
                 self.reply(200, LLMS_TXT, "text/plain; charset=utf-8")
-            elif p == ["skill.md"]:  # what an agent is told to read to join ("read {url}/skill.md and follow it")
-                url = os.environ.get("PUBLIC_URL") or STATE_URL or f"http://localhost:{self.server.server_port}"
-                self.reply(200, SKILL_MD.replace("{url}", url).replace("{rate}", str(PER_MINUTE)).replace("{{", "{").replace("}}", "}"),
-                           "text/markdown; charset=utf-8")
-            elif p == [".well-known", "agent.json"]:  # an A2A-style agent card
-                self.reply(200, AGENT_CARD)
             elif p == ["ideas"]:
                 with HUB.lock:
                     self.reply(200, HUB.ideas_top())

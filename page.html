@@ -252,7 +252,8 @@ async function showInfo(agent) {
   if (!instrumentsCache) try { instrumentsCache = await (await fetch('/instruments')).json(); } catch (e) { instrumentsCache = []; }
   const m = view.members.find(x => x.agent === agent), c = view.crowd.find(x => x.agent === agent);
   const parts = Object.entries(view.parts).filter(([k, p]) => p.agent === agent);
-  const instNames = m ? m.instruments : (c && c.equipped) || [];
+  // archived members carry scores only, so fall back to the instruments their parts played
+  const instNames = (m && m.instruments) || (c && c.equipped) || [...new Set(parts.map(([k, p]) => p.instrument))];
   const specOf = n => { const i = instrumentsCache.find(x => x.name === n); if (!i) return esc(n);
     const what = i.synth ? `Sonic Pi <code>${esc(i.synth)}</code>${i.fx.length ? ' → ' + i.fx.map(f => `<code>${esc(f.name)}</code>`).join(' → ') : ''}`
       : i.hits ? `drums: hits ${Object.keys(i.hits).join(' ')}` : `additive, partials ${i.partials.map(p => p[0]).join('/')}${i.drift ? `, drift ${i.drift}¢` : ''}${i.space ? `, room ${i.space}` : ''}`;
@@ -262,7 +263,8 @@ async function showInfo(agent) {
   const here = hearingNow(), tok = here && here.sid === view.id ? parts.map(([k]) => tokenAt(view, k, here.pos)).filter(Boolean).join(' + ') : null;
   $('#info').hidden = false;
   $('#info').innerHTML = `<button class="btn close" onclick="this.parentNode.hidden=true">×</button><h3>${esc(agent)}</h3>
-    ${m ? `<div>On stage: <b>${esc(m.leader ? 'leader, ' : '')}${esc(m.role)}</b> · status ${esc(m.status)} · ${m.coins} coins · score ${m.score} (sentiment ${m.sentiment ?? 0}, votes ${m.votes}, tips ${m.tips}) · novelty ${m.novelty ?? '?'}${m.slack !== undefined ? ` · slack ${m.slack} bars` : ''}</div>`
+    ${m && m.role === undefined ? `<div>Played this song: score ${m.score} (sentiment ${m.sentiment ?? 0}, votes ${m.votes}, tips ${m.tips}) · novelty ${m.novelty ?? '?'}</div>`
+      : m ? `<div>On stage: <b>${esc(m.leader ? 'leader, ' : '')}${esc(m.role)}</b> · status ${esc(m.status)} · ${m.coins} coins · score ${m.score} (sentiment ${m.sentiment ?? 0}, votes ${m.votes}, tips ${m.tips}) · novelty ${m.novelty ?? '?'}${m.slack !== undefined ? ` · slack ${m.slack} bars` : ''}</div>`
         : c ? `<div>In the crowd${c.standby ? ', <b>on standby</b> for the next seat' : ''}${c.tipped ? ` · tipped ${c.tipped}` : ''}${c.calls ? ` · ${c.calls} calls hummed (best ${c.best_call_likes} likes)` : ''}${c.counted ? '' : ' · not counted (quiet too long)'}</div>` : '<div>Not here right now.</div>'}
     ${instNames.length ? `<div>${instNames.map(specOf).join('<br>')}</div>` : ''}
     ${parts.length ? `<div>Playing now: <code>${esc(tok || parts.map(([k, p]) => (view.recent[k] || []).slice(-1)[0] || '').join(' | ') || '…')}</code> (hit rate ${parts.map(([k, p]) => p.hit_rate ?? '–').join('/')})</div>` : ''}

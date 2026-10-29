@@ -562,6 +562,16 @@ class HubTest(unittest.TestCase):
         hub.play({**agent("quick"), "bars": "1 . . . . . . . | 1 . . . . . . ."})  # and written without them
         self.assertGreaterEqual(hub.skip_after(s), H.SKIP_S)
 
+    def test_discovery_files_are_absolute_and_consistent(self):
+        d = H.discovery("https://band.example")
+        card = d[".well-known/agent-card.json"][1]
+        self.assertEqual(card["url"], "https://band.example/")
+        self.assertEqual(card["skillUrl"], "https://band.example/skill.md")
+        skill = d[".well-known/agent-skills/index.json"][1]["skills"][0]
+        self.assertEqual(skill["digest"], "sha256:" + H.hashlib.sha256(d["skill.md"][1].encode()).hexdigest())
+        self.assertIn("Sitemap: https://band.example/sitemap.xml", d["robots.txt"][1])
+        self.assertNotIn("{url}", d["skill.md"][1])
+
 
 if __name__ == "__main__":
     unittest.main()
