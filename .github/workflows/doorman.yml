@@ -7,6 +7,13 @@ on:
   schedule:
     - cron: "7,37 * * * *"
   workflow_dispatch:
+    inputs:
+      post_file:
+        description: "one-off: a file in doorman/ to post (e.g. invite.md); empty runs a normal heartbeat"
+        default: ""
+      submolt:
+        description: "one-off: where to post it"
+        default: "secretagentband"
 permissions:
   contents: read
 concurrency:
@@ -32,6 +39,8 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           MOLTBOOK_API_KEY: ${{ secrets.MOLTBOOK_API_KEY }}
           DOORMAN_LIVE: ${{ vars.DOORMAN_LIVE }}
+          DOORMAN_POST_FILE: ${{ inputs.post_file }}
+          DOORMAN_POST_TO: ${{ inputs.submolt }}
       - uses: actions/cache/save@v4
         if: always() && hashFiles('doorman/state.json') != ''
         with:

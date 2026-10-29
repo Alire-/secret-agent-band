@@ -253,9 +253,31 @@ def main():
     report = Report([])
     report.append(f"## Doorman run {st['runs']} ({'LIVE' if LIVE else 'dry run'}, {datetime.datetime.now():%Y-%m-%d %H:%M})")
     try:
-        run(st, report)
+        (one_off if os.environ.get("DOORMAN_POST_FILE") else run)(st, report)
     finally:  # counts, the verification streak and what was seen survive a crash
         save_state(st)
+
+
+def one_off(st, report):
+    """Post a file from doorman/ (first line '# title', then the body) to a submolt, through the same checks."""
+    submolt = os.environ.get("DOORMAN_POST_TO", SUBMOLT)
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.path.basename(os.environ["DOORMAN_POST_FILE"]))) as f:
+        title, _, text = f.read().partition("\n")
+    action = {"candidate": "c0", "do": "post", "title": title.lstrip("# ").strip(), "text": text.strip(), "why": "one-off"}
+    why_not = check(action, [{"id": "c0", "kind": "news"}], st)
+    claim = molt("GET", "/agents/status").get("status", "?") if KEY else "no key"
+    report.append(f"One-off post to m/{submolt}: \"{action['title']}\" (account: {claim})")
+    if why_not or not LIVE or claim != "claimed" or st["verify_fails"] >= MAX_VERIFY_FAILS:
+        return report.append(f"  not sent: {why_not or ('dry run' if not LIVE else claim if claim != 'claimed' else 'too many failed verifications')}")
+    resp = molt("POST", "/posts", {"submolt_name": submolt, "title": action["title"], "content": action["text"]})
+    ok = resp.get("success", True) is not False and verified(resp, report)
+    st["verify_fails"] = 0 if ok else st["verify_fails"] + 1
+    if ok:
+        st["counts"]["post"] = st["counts"].get("post", 0) + 1
+        pid = (resp.get("post") or {}).get("id")
+        report.append(f"  (sent) https://www.moltbook.com/post/{pid}")
+    else:
+        report.append(f"  (FAILED: {json.dumps(resp)[:300]})")
 
 
 def run(st, report):
