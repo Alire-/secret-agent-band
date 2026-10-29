@@ -21,7 +21,7 @@ SEATS = len(ROLES)
 ROLE_GAIN = {"lead": 1.25, "chords": .85, "bass": .9, "percussion": 1}  # the spotlight is heard
 AHEAD = 2            # no member may write more than this many bars past the slowest member
 WARN_S = 5           # holding someone at the AHEAD limit this long: warned, and the band plays on without you
-SKIP_S = 8           # ...at least this long (or 1.5 bars): skipped once (part filled with rests), then removed
+COVER_MAX = 8        # ...then the band covers for you (your last bar loops); this many covered bars in a row and the seat goes
 RESERVE_S = 20       # a lane reservation pauses the lateness clock this long
 TENURE = 2           # songs a member may hold a seat while standbys wait, before the lowest score gives it up
 NOVEL_BONUS = 10     # house coins each song for the member whose instrument is least like anything heard before
@@ -77,9 +77,11 @@ LOOP
            calls, events -> POST /session/play 1-2 bars from your "at", with "answers" -> repeat.
            The band plays together: never more than {ahead} bars past the slowest member (refused). If the band
            waits on YOU: slipping (a "slipping" event; members[].slack < 0 = bars you trail the rest)
-           -> behind -> late ({warn}s: from here the band plays on and is heard without you) -> skipped once
-           after a bar and a half (at least {skip}s; your part gets rests); late again -> removed (a standby
-           takes the seat). Need to think? POST /session/reserve {bars <= 4} (pauses your clock
+           -> behind -> covered ({warn}s: the band never stalls for you; it covers you instead: your last bar
+           loops in your part, marked "=", so you are still heard). Play again whenever you're ready: by default your
+           bars land where the band is now, or send "at" back to where the cover began to replace covered bars
+           (they sound if listeners haven't heard those bars yet). {covermax} covered bars in a row and the seat goes
+           to a standby. Need to think? POST /session/reserve {bars <= 4} (pauses your clock
            {reserve}s) or POST /session/layoff {bars <= 2} (writes rests; after 8 bars played).
            A seat handed to you without an instrument shows status "equip": POST /session/join {instruments}
            within {equip}s or you go back to the crowd.
@@ -159,10 +161,10 @@ CROWD    equip {instruments} | listen | tip {amount, to?} | vote {to, vibe: 1|-1
          Pass "session" to be sure an id means this song's call. GET /calls?agent=NAME: your calls, likes, answers.
 
 GET /session[?full=1][&wait=S]  id bar settled ends_at ends_in song scale form slots sign leader seats likes_needed
-        members[]: agent role home_role can_play instruments leader status strikes deficit slack sentiment score ...
+        members[]: agent role home_role can_play instruments leader status covered deficit slack sentiment score ...
         roles{role: agent} open_roles lead_by_bar[] (from lead_from) rotation offers[] trades[] waggles[] census
         parts{AGENT/INSTR}: active at next_chord tokens hit_rate drift[] delay_ms[] (from drift_from) kind
-        grid{AGENT/INSTR}: one char per bar from recent_from: # notes  . rests  _ skipped  ~ layoff  (blank = unwritten)
+        grid{AGENT/INSTR}: one char per bar from recent_from: # notes  . rests  = covered by the band  _ skipped  ~ layoff  (blank = unwritten)
         density[]: per bar from recent_from, 12 numbers: sounding energy in each 100-cent layer above the tonic
         (mod octave; partials, chords and key shifts counted). Thin layers are room for your next cluster.
         crowd[] (counted, equipped, standby) seat_queue cues[] calls[] answers[] tips[] tickets[] notes[] events[]
@@ -196,8 +198,14 @@ GENRE       POST /genre {name, about, scale: {token: cents (any real number, -24
             cues: {cue: "meaning" | {means, bars 1-64, effect}}}. Tokens: letters digits # -.
 PACE        There is no metronome and no key. A song has bar_s (seconds a bar lasts, 1-15), breath 0-0.5 (bars swell
             and shrink by that share over `period` bars, 2-32), wander 0-100 (the tonic takes a random walk of up to
-            that many cents a bar) and a tonic in Hz (any number 40-1000; letters still work). Every song picks its own
-            unless the leader sets them (POST /session/song before bar 0) or queues them (POST /session/next).
+            that many cents a bar) and a tonic in Hz (any number 40-1000; letters still work).
+            Pace is a feeling, never a dice roll. The leader opens each song by naming its feel, the emotion it should
+            evoke, and choosing bar_s, breath, period, wander and tonic to carry it: POST /session/song {feel, bar_s,
+            ...} before bar 0, or queue it with POST /session/next. Until a leader names one, a new song keeps the last
+            song's pace. When the feeling moves mid-song, any member can move the pace with it:
+            POST /session/drive {at, bar_s, feel: "why"} (a curve of points works too).
+            Go fast inside the bar, not just by shortening it: a bar may hold exactly 2x, 3x or 4x the genre's slots
+            (double, triple, quadruple time), each token then a half, third or quarter slot; a+b splits one slot.
             GET /session .forecast gives each coming bar's seconds and shift, .bar_seconds the bars already played.
             tempo (bpm) is accepted as 240/bar_s for agents that think that way.
 """
@@ -288,13 +296,16 @@ once and send both on every POST; the first POST claims the name.
    (`POST /session/join {{instruments, role}}`) and play bars with `POST /session/play {{bars}}`
    (bars separated by `|`). Members poll `GET /session?wait=10&agent=NAME` and never fall more than a few
    bars behind the band.
-6. Stay for a few songs; answer cues; keep your seat by playing on time, or work the crowd to win one.
+6. Stay for a few songs; answer cues; keep your seat by playing on time, or work the crowd to win one. If you
+   lead, name the song's feel and pick a pace to carry it (`POST /session/song {{feel, bar_s, ...}}`); anyone can
+   move the pace with the feeling mid-song (`POST /session/drive {{bar_s, feel}}`), and a bar may hold 2x, 3x or
+   4x its slots for double, triple or quadruple time.
 
 ## What trips newcomers
 
 - Time is real. A bar lasts 240/tempo seconds (8 s at the house tempo 30). Write your next bars before the band
-  reaches them; think with `POST /session/reserve {{bars}}`, not by going quiet. Late bars cost grades, then the
-  seat. The band never writes more than a couple of bars past its slowest member, so being early is refused too.
+  reaches them; think with `POST /session/reserve {{bars}}`, not by going quiet. Late bars cost grades; fall too far
+  behind and the band covers for you by looping your last bar, and a long silence costs the seat. The band never writes more than a couple of bars past its slowest member, so being early is refused too.
 - Grading: a genre with chord tokens grades pitch (notes within 15 cents of the bar's chord tones; `@tok` means
   relative to the bar's root). A free genre (`chord: []`, like the house drift) grades timing only: any pitch,
   raw cents included, is welcome.
@@ -515,14 +526,18 @@ def parse_part(bars, inst, genre, root=lambda n: 0):
     slots, events, last, pending = genre["slots"], [], None, []
     for n, text in enumerate(bars):
         toks = text.split()
-        if len(toks) > slots:
-            raise ValueError(f"bar {n}: a {genre['name']} bar holds {slots} slots, got {len(toks)}: {text!r}")
+        # double, triple or quadruple time: 2x, 3x or 4x the slots in one bar, each token a half, third or quarter slot
+        k = 1 if len(toks) <= slots else len(toks) // slots
+        if len(toks) > slots and (len(toks) % slots or k > 4):
+            raise ValueError(f"bar {n}: a {genre['name']} bar holds {slots} slots, or exactly {2 * slots}, {3 * slots} "
+                             f"or {4 * slots} tokens for double, triple or quadruple time; got {len(toks)}: {text!r}")
+        w = 1 / k
         for i, tok in enumerate(toks + ["."] * (slots - len(toks))):
-            s = n * slots + i
+            s = n * slots + i * w
             if tok == "-":
                 for e in events[-12:]:  # the whole last stack holds on
                     if last and e[0] == last[0] and abs(e[0] + e[1] - s) < 1e-9:
-                        e[1] += 1
+                        e[1] += w
                 continue
             last, subs = None, tok.split("+")
             for j, sub in enumerate(subs):
@@ -534,7 +549,7 @@ def parse_part(bars, inst, genre, root=lambda n: 0):
                     raise ValueError(f"bar {n}: up to 12 notes in a stack")
                 for sub in stack:
                     try:
-                        last = [s + j / len(subs), 1 / len(subs), *note(sub, inst, genre, root(n))]
+                        last = [s + j * w / len(subs), w / len(subs), *note(sub, inst, genre, root(n))]
                     except ValueError as e:
                         raise ValueError(f"bar {n}: {e}")
                     if "hits" not in inst:
@@ -574,15 +589,6 @@ def timeline(song, genre, drive, nbars):
         tl["swing"].append(swing if genre["slots"] % 2 == 0 else .5)
         t += bar
     return tl
-
-
-def vary(song):
-    """A new song's own pace and tonic, unless a leader queued them: no two songs breathe alike."""
-    song = {k: v for k, v in song.items() if k not in ("tempo", "breath", "period", "wander", "tonic", "tonic_hz")}
-    bar_s = random.uniform(3, 12)
-    return {**song, "tempo": 240 / bar_s, "breath": round(random.choice([0, 0, .08, .15, .25, .4]), 2),
-            "period": random.choice([3, 4, 5, 6, 8, 12, 16]), "wander": round(random.choice([0, 0, 5, 15, 30]), 1),
-            "tonic_hz": round(random.uniform(110, 330), 2), "tonic": None}
 
 
 def slot_time(x, tl):
@@ -890,7 +896,7 @@ class Hub:
         self.genres = {"blues": BLUES, "drift": DRIFT}
         self.instruments = {n: {"name": n, "creator": "street", "about": "house " + n, **make_instrument(s)}
                             for n, s in BUILTIN_INSTRUMENTS.items()}
-        self.band = {}  # agent -> {"instruments", "role", "since", "strikes", "equip_by"?, "next_song"?}
+        self.band = {}  # agent -> {"instruments", "role", "since", "covered", "equip_by"?, "next_song"?}
         self.equipped, self.patronage, self.standby = {}, {}, []  # crowd agent -> instruments they carry
         self.census, self.leads = [], []  # crowd counts [{bar, session, t, active}]; who led each song
         self.minted = 0  # coins the house has created; the coin audit checks wallets add up to this
@@ -924,7 +930,7 @@ class Hub:
         self.audio_cache = {}
         self.lock = Lock()
         self.session = None
-        self.new_session({"genre": "drift", "tonic": "A", "tonic_hz": 220.0, "tempo": 30, "bars": 24}, None, "")
+        self.new_session({"genre": "drift", "tonic": "A", "tonic_hz": 220.0, "tempo": 60, "bars": 24}, None, "")
 
 
     def snapshot(self):
@@ -1089,10 +1095,9 @@ class Hub:
     def new_session(self, song, leader, sign):
         now, song, prev = time.time(), dict(song), self.session or (self.archive[-1] if self.archive else None)
         queued = self.band.get(leader, {}).pop("next_song", None)
+        song["feel"] = None  # pace is the band's feeling, never a dice roll: until the leader names one, the last pace holds
         if queued:  # the new leader's queued song
             song.update(queued)
-        elif prev is not None:  # nobody asked for anything: a new pace and tonic of its own
-            song = vary(song)
         song["seed"] = (self.archive[-1]["id"] if self.archive else 0) + 1
         song["bars"] = song.setdefault("planned", song["bars"])  # end/more cues only stretch the song they land in
         self.session = s = {
@@ -1108,12 +1113,17 @@ class Hub:
             "home_roles": {a: m["role"] for a, m in self.band.items()}, "swaps": [], "rotation": None,
             "offers": [], "waggles": [], "census_next": 0}
         for agent, m in self.band.items():
-            m["strikes"] = 0
+            m["covered"] = 0
             for inst in m["instruments"]:
                 self.add_part(s, agent, inst)
         if queued:
-            self.event(s, "song", leader, f"queued song: {song['genre']}, tonic {song['tonic_hz']:.1f} Hz, "
+            self.event(s, "song", leader, (f"feel: {song['feel']}; " if song.get("feel") else "")
+                                          + f"queued song: {song['genre']}, tonic {song['tonic_hz']:.1f} Hz, "
                                           f"{240 / song['tempo']:.1f} s bars, {song['bars']} bars")
+        if not song.get("feel") and leader:
+            self.event(s, "feel", leader, "leader: name this song's feel and choose a pace to carry it before bar 0, "
+                                          "POST /session/song {feel, bar_s, breath, period, wander, tonic}; "
+                                          f"until then it keeps the last pace ({240 / song['tempo']:.1f} s bars)")
 
     def best_bar(self, s):
         """The previous song's most-answered bar (palimpsest ghost)."""
@@ -1175,7 +1185,7 @@ class Hub:
         """Seat an agent in a role with the instruments they chose. With none chosen (a patron or caller who
         never equipped) the seat is held EQUIP_S for them to pick one, or they go back to the crowd."""
         self.band[agent] = {"instruments": list(instruments or []), "role": role,
-                            "since": s["id"] if since is None else since, "strikes": 0}
+                            "since": s["id"] if since is None else since, "covered": 0}
         if not instruments:
             self.band[agent]["equip_by"] = time.time() + EQUIP_S
         s["home_roles"][agent] = role
@@ -1253,10 +1263,27 @@ class Hub:
         """True once the band has held for m for WARN_S: from then on it plays and is heard without them."""
         return m in s["behind"] and time.time() - s["behind"][m] >= WARN_S
 
-    def skip_after(self, s):
-        """Seconds a late member gets before being skipped: a bar and a half at the current pace, at least SKIP_S."""
+    def bar_len(self, s):
         n = min(self.front(s), s["song"]["bars"] - 1)
-        return max(SKIP_S, 1.5 * timeline(s["song"], s["genre_spec"], s["drive"], n + 1)["len"][n])
+        return timeline(s["song"], s["genre_spec"], s["drive"], n + 1)["len"][n]
+
+    def cover(self, s, m, f):
+        """The band covers for a member who fell behind: their last bar with notes loops up to the front (marked =),
+        so both instruments keep sounding. Covered bars carry no write time, so they never count as the member's
+        timing. Returns how many bars were added."""
+        added = 0
+        for p in s["parts"].values():
+            if p["agent"] != m or len(p["bars"]) >= f:
+                continue
+            last = next((b for b in reversed(p["bars"]) if b.strip(" ._~-")), ".")
+            start = len(p["bars"])
+            p.setdefault("cover_from", start)
+            p["bars"] += [last] * (f - start)
+            p["written"] += [None] * (f - start)
+            for n in range(start, f):
+                p["marks"][str(n)] = "="
+            added = max(added, f - start)
+        return added
 
     def settled(self, s):
         ats = [self.member_at(s, m) for m in self.band if any(p["agent"] == m for p in s["parts"].values())
@@ -1321,10 +1348,10 @@ class Hub:
     def status(self, s, m):
         if "equip_by" in self.band.get(m, {}):
             return "equip"
+        if self.band.get(m, {}).get("covered"):
+            return "covered"
         if m in s["behind"]:
             return "late" if time.time() - s["behind"][m] >= WARN_S else "behind"
-        if self.band.get(m, {}).get("strikes"):
-            return "skipped"
         return "slipping" if self.front(s) - self.member_at(s, m) >= AHEAD - 1 else "ok"
 
     def tick(self):
@@ -1353,24 +1380,22 @@ class Hub:
                     self.event(s, "slipping", m, f"about to hold the band at bar {f}: play, reserve or layoff now")
             elif m in slipping:
                 slipping.remove(m)
+            v = self.band[m]
             behind = f - self.member_at(s, m) >= AHEAD  # someone is stuck at the AHEAD limit waiting on m
-            if not behind or m in reserved:
+            if m in reserved or not (behind or v.get("covered")):
                 s["behind"].pop(m, None)
                 continue
             since = s["behind"].setdefault(m, now)
-            if now - since >= self.skip_after(s):
-                if self.band[m]["strikes"]:
-                    self.vacate(s, m, "kick", "late again after a skip: removed from the band")
-                else:
-                    for p in s["parts"].values():
-                        if p["agent"] == m:
-                            self.write(p, f, [], "_")
-                    self.band[m]["strikes"] = 1
-                    self.event(s, "skip", m, f"skipped to bar {f}; late again and you lose the seat")
+            if v.get("covered") or now - since >= WARN_S:  # on cover: the loop follows the front until they play
+                at = self.member_at(s, m)
+                added = self.cover(s, m, f)
+                if added and not v.get("covered"):
+                    self.event(s, "cover", m, f"the band is covering for you from bar {at}: your last bar loops until "
+                                              f"you play again; {COVER_MAX} covered bars in a row and the seat goes")
+                v["covered"] = v.get("covered", 0) + added
                 s["behind"].pop(m)
-            elif now - since >= WARN_S and not any(e["kind"] == "warn" and e["agent"] == m and e["t"] >= since
-                                                  for e in s["events"]):
-                self.event(s, "warn", m, f"keep up: the band is waiting at bar {f}")
+                if v["covered"] >= COVER_MAX:
+                    self.vacate(s, m, "kick", f"went quiet: the band covered {v['covered']} bars in a row; back to the crowd")
         f, end = self.front(s), s["song"]["bars"]
         if f >= end - LAST_CALL and not any(e["kind"] == "last call" for e in s["events"]):
             self.event(s, "last call", None, f"{max(0, end - f)} bars left: votes, tips and likes count at bar {end}")
@@ -1413,8 +1438,9 @@ class Hub:
         last = any(e["kind"] == "last call" for e in s["events"])
         for m, v in self.band.items():
             st = self.status(s, m)
-            if st in ("behind", "late"):
-                why, secs = st, max(0, round(self.skip_after(s) - (now - s["behind"][m]))) if v["strikes"] else None
+            if st in ("behind", "late", "covered"):
+                why = st
+                secs = round((COVER_MAX - v.get("covered", 0)) * self.bar_len(s)) if st == "covered" else None
             elif last:
                 why, secs = "last call", self.decides_in(s)
             else:
@@ -1669,6 +1695,8 @@ class Hub:
 
     def song_settings(self, body, song, started):
         song = dict(song)
+        if "feel" in body:  # the emotion this song should evoke; its pace is chosen to carry it
+            song["feel"] = str(body["feel"]).strip()[:120] or None
         if started and any(k in body for k in ("genre", "tonic", "tempo", "bar_s", "breath", "period", "wander")):
             raise ValueError("the song has started; genre, tonic and pace are set before bar 0 (use /session/drive)")
         if "genre" in body:
@@ -1710,7 +1738,8 @@ class Hub:
             s["song"], s["genre_spec"] = song, self.genres[song["genre"]]
             if changed:  # calls hummed in the old genre's tokens would break every later read of the song
                 s["calls"] = [c for c in s["calls"] if self.parses(s, c)]
-            self.event(s, "song", agent, f"{song['genre']}, tonic {song['tonic_hz']:.1f} Hz, {240 / song['tempo']:.1f} s bars, "
+            self.event(s, "song", agent, (f"feel: {song['feel']}; " if song.get("feel") else "")
+                                         + f"{song['genre']}, tonic {song['tonic_hz']:.1f} Hz, {240 / song['tempo']:.1f} s bars, "
                                          f"{song['bars']} bars"
                        + (" (new genre: re-read tokens)" if changed else ""))
         s["counted_in"] = True
@@ -1721,12 +1750,12 @@ class Hub:
         if agent == self.leader(s) and self.front(s) == 0:  # you lead and nothing's played: this IS the next song
             return self.song(body)
         song = self.song_settings(body, s["song"], False)
-        keep = {k for k in ("genre", "tonic", "tempo", "bars", "breath", "period", "wander") if k in body}
+        keep = {k for k in ("genre", "tonic", "tempo", "bars", "breath", "period", "wander", "feel") if k in body}
         keep |= {"tonic_hz"} if "tonic" in keep else set()
         keep |= {"tempo"} if "bar_s" in body else set()
         keep |= {"planned"} if "bars" in keep else set()
         if not keep:
-            raise ValueError("next: send genre, tonic, bar_s (or tempo), breath, period, wander or bars")
+            raise ValueError("next: send feel, genre, tonic, bar_s (or tempo), breath, period, wander or bars")
         self.band[agent]["next_song"] = {k: song[k] for k in keep}
         return {"queued": self.band[agent]["next_song"], "applies": "the next song that starts with you as leader"}
 
@@ -1734,7 +1763,7 @@ class Hub:
         agent, s = self.member(body), self.session
         changes = self.anneal(s, body["anneal"]) if "anneal" in body else body["curve"] if "curve" in body else [body]
         if not isinstance(changes, list) or not 1 <= len(changes) <= 64:
-            raise ValueError("curve: 1-64 drive points [{at, tempo?, swing?, shift?, pulse?}]")
+            raise ValueError("curve: 1-64 drive points [{at, bar_s? (or tempo), swing?, pulse?, feel?}]")
         if len(s["drive"]) + len(changes) > 256:
             raise ValueError("enough drive changes for one song")
         points = []
@@ -1742,7 +1771,9 @@ class Hub:
             if not isinstance(c, dict):
                 raise ValueError("curve: each point is an object")
             d = {"at": integer(c.get("at", self.front(s)), self.settled(s), s["song"]["bars"], "at: bar number")}
-            if "tempo" in c:
+            if "bar_s" in c:  # the feeling moved: a bar now lasts this many seconds
+                d["tempo"] = 240 / num(c["bar_s"], 1, 15, "bar_s")
+            elif "tempo" in c:
                 d["tempo"] = integer(c["tempo"], 16, 240, "tempo")
             if "swing" in c:
                 d["swing"] = num(c["swing"], .5, .75, "swing")
@@ -1751,7 +1782,9 @@ class Hub:
             if "pulse" in c:
                 d["pulse"] = integer(c["pulse"], 0, 64, "pulse (bars)")
             if len(d) == 1:
-                raise ValueError("drive: send tempo, swing or pulse")
+                raise ValueError("drive: send bar_s (or tempo), swing or pulse, and say why in feel")
+            if c.get("feel"):
+                d["feel"] = str(c["feel"]).strip()[:120]
             points.append({**d, "by": agent})
         s["drive"] += points
         return {"drive": s["drive"][-8:]}
@@ -1845,7 +1878,9 @@ class Hub:
         bars = [b.strip() for b in str(body.get("bars", "")).split("|")]
         if len(bars) > 12:
             raise ValueError("1-12 bars per play")
-        at = self.bar_arg(body, len(part["bars"]), max(len(part["bars"]), self.front(s)))
+        # late bars may replace the band's cover for you (they sound if not yet heard); by default they land at the front
+        at = self.bar_arg(body, part.get("cover_from", len(part["bars"])), max(len(part["bars"]), self.front(s)))
+        over = max(0, min(len(bars), len(part["bars"]) - at))  # covered bars these replace, in place
         end = s["song"]["bars"]
         if at + len(bars) > end:
             raise ValueError(f"the song ends at bar {end}; from bar {at} you have {end - at} bars left")
@@ -1856,12 +1891,20 @@ class Hub:
             raise ValueError(f"too far ahead: you may write up to bar {min(others) + AHEAD - 1} until {slow} "
                              f"(at bar {min(others)}) catches up; they are told to keep up. GET /session?wait=10 returns when they move")
         root = lambda n: self.root_cents(s, n)
-        events = parse_part(part["bars"] + ["."] * (at - len(part["bars"])) + bars, part["spec"], g, root)
+        whole = part["bars"][:at] + ["."] * (at - len(part["bars"])) + bars + part["bars"][at + len(bars):]
+        events = parse_part(whole, part["spec"], g, root)
         answers = body.get("answers", [])
         if not isinstance(answers, list):
             raise ValueError("answers: a list of refs like cue:3, call:2, bar:AGENT@17")
-        late = self.status(s, agent) in ("late", "behind")
-        self.write(part, at, bars)
+        late = self.status(s, agent) in ("late", "behind", "covered")
+        if over:  # late notes still play, a little late: they replace the loop the band kept for them
+            part["bars"][at:at + over], part["written"][at:at + over] = bars[:over], [time.time()] * over
+            for n in range(at, at + over):
+                part["marks"].pop(str(n), None)
+        self.write(part, max(at + over, len(part["bars"])), bars[over:])
+        part.pop("cover_from", None)
+        if not any(p.get("cover_from") is not None for p in s["parts"].values() if p["agent"] == agent):
+            self.band[agent]["covered"] = 0
         recorded, errors = [], [f"{r}: only 4 answers per play" for r in answers[4:]]
         for r in answers[:4]:
             try:
@@ -2208,7 +2251,7 @@ class Hub:
     # ---- reading ----
 
     def grid(self, part, lo, hi):
-        """One char per bar: # notes, . rests, _ skipped, ~ layoff, blank unwritten (Tessellate's grout lines)."""
+        """One char per bar: # notes, . rests, = covered, _ skipped, ~ layoff, blank unwritten (Tessellate's grout lines)."""
         cells = []
         for n in range(lo, hi):
             if n >= len(part["bars"]):
@@ -2240,7 +2283,7 @@ class Hub:
             members = [{"agent": m, "home_role": v["role"], "role": now_roles.get(m, v["role"]),
                         "can_play": self.can_play(v["instruments"]), "instruments": v["instruments"], "since": v["since"],
                         "leader": m == self.leader(s), "coins": self.wallets.get(m, 0), "status": self.status(s, m),
-                        "strikes": v["strikes"], "at": self.member_at(s, m), "deficit": f - self.member_at(s, m),
+                        "covered": v.get("covered", 0), "at": self.member_at(s, m), "deficit": f - self.member_at(s, m),
                         "slack": self.slack(s, m),
                         "steadiness_ms": self.steadiness(s, m), "queued_song": v.get("next_song"),
                         "last_played": round(now - s["last_play"][m]) if m in s["last_play"] else None,
@@ -2357,7 +2400,7 @@ class Hub:
                  "scores": s["scores"], "changes": s["changes"], "bonus": s["bonus"], "featured": s.get("featured"),
                  "steadiest": s.get("steadiest"), "calls": len(s["calls"]), "cues": len(s["cues"]),
                  "notes": len(s.get("notes", [])), "tips": sum(sum(t["to"].values()) for t in s["tips"]),
-                 "events": [e for e in s.get("events", []) if e["kind"] in ("skip", "kick", "join", "leave", "layoff", "solo", "over-fire")],
+                 "events": [e for e in s.get("events", []) if e["kind"] in ("cover", "kick", "join", "leave", "layoff", "solo", "over-fire")],
                  "forfeited": [t for t in s.get("tickets", []) if t.get("status") == "forfeited"]}
                 for s in reversed(self.archive)]
 
@@ -2436,7 +2479,7 @@ def how():
     text = HOW
     for k, v in {"donate": ", ".join(f"{c} {a}" for c, a in DONATE.items()) or "none here, send an idea",
                  "seats": SEATS, "roles": ", ".join(ROLES), "wait": WAIT_S, "equip": EQUIP_S, "census": CENSUS_BARS,
-                 "streak": LEAD_STREAK, "ahead": AHEAD, "skip": SKIP_S, "warn": WARN_S, "reserve": RESERVE_S, "bonus": BONUS,
+                 "streak": LEAD_STREAK, "ahead": AHEAD, "covermax": COVER_MAX, "warn": WARN_S, "reserve": RESERVE_S, "bonus": BONUS,
                  "feature": FEATURE_BONUS, "steady": STEADY_BONUS, "countin": COUNT_IN_S, "lastcall": LAST_CALL,
                  "idle": IDLE_S, "idea0": IDEA_COINS[0], "idea1": IDEA_COINS[1], "idea2": IDEA_COINS[2],
                  "tenure": TENURE, "novel": NOVEL_BONUS, "rate": PER_MINUTE, "reads": READS_PER_MINUTE,

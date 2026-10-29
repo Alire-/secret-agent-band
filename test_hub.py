@@ -164,26 +164,33 @@ class HubTest(unittest.TestCase):
             self.assertGreater(w.getnframes(), H.RATE * 5)
         self.assertEqual(len(secs), 2)
 
-    def test_slow_member_warned_skipped_then_kicked(self):
-        hub = self.hub
+    def test_slow_member_is_covered_never_dropped(self):
+        hub, s = self.hub, self.hub.session
         self.admit("fast", "slow")
         self.seat(("fast", "harp"), ("slow", "bass"))
+        hub.play({**agent("fast"), "bars": "1"})  # the leader counts in
+        hub.play({**agent("slow"), "bars": "1 . 5 ."})
         hub.play({**agent("fast"), "bars": "1|1"})
-        s = hub.session
         hub.tick()
         self.assertEqual(hub.status(s, "slow"), "behind")
         s["behind"]["slow"] -= H.WARN_S
+        hub.tick()  # the band covers: slow's last bar loops to the front, so both parts keep sounding
+        part = s["parts"]["slow/bass"]
+        self.assertEqual((hub.status(s, "slow"), s["events"][-1]["kind"]), ("covered", "cover"))
+        self.assertEqual((part["bars"], part["written"][1:]), (["1 . 5 ."] * 3, [None, None]))
+        self.assertEqual(hub.view()["grid"]["slow/bass"], "#==")
+        hub.play({**agent("fast"), "bars": "1|1"})  # nobody waits on a covered member
         hub.tick()
-        self.assertEqual((hub.status(s, "slow"), s["events"][-1]["kind"]), ("late", "warn"))
-        s["behind"]["slow"] -= H.SKIP_S
-        hub.tick()
-        self.assertEqual((s["events"][-1]["kind"], hub.member_at(s, "slow"), hub.band["slow"]["strikes"]), ("skip", 2, 1))
+        self.assertEqual(len(part["bars"]), 5)
+        r = hub.play({**agent("slow"), "at": 2, "bars": "5 . 1 ."})  # late bars replace the cover
+        self.assertEqual((r["landed_at"], part["bars"][1:], hub.band["slow"]["covered"]),
+                         (2, ["1 . 5 .", "5 . 1 .", "1 . 5 .", "1 . 5 ."], 0))  # replaced in place, the loop after it kept
+        self.assertEqual(hub.status(s, "slow"), "ok")
+        hub.band["slow"]["covered"], s["behind"]["slow"] = H.COVER_MAX - 1, time.time() - H.WARN_S
         hub.play({**agent("fast"), "bars": "1|1"})
-        hub.tick()
-        s["behind"]["slow"] -= H.SKIP_S
-        hub.tick()
-        self.assertEqual(s["events"][-1]["kind"], "kick")
+        hub.tick()  # a long silence, not lateness, costs the seat
         self.assertNotIn("slow", hub.band)
+        self.assertEqual(s["events"][-1]["kind"], "kick")
 
     def test_slack_and_slipping_event(self):
         hub = self.hub
@@ -222,11 +229,11 @@ class HubTest(unittest.TestCase):
         self.assertEqual(hub.view()["seat_queue"]["warm"], [])
         hub.play({**agent("lead"), "bars": "1|1"})
         hub.tick()
-        hub.band["b"]["strikes"] = 1  # skipped once already: late again and the seat empties
+        hub.band["b"]["covered"] = H.COVER_MAX - 1  # covered almost long enough to lose the seat
         warm = hub.view()["seat_queue"]["warm"]
         self.assertEqual([(w["agent"], w["role"], w["replaces"], w["prewrite"]) for w in warm], [("sub", "bass", "b", True)])
-        self.assertLessEqual(warm[0]["first_bar_in_s"], H.SKIP_S)
-        s["behind"]["b"] -= H.SKIP_S
+        self.assertLessEqual(warm[0]["first_bar_in_s"], 2 * hub.bar_len(s))
+        s["behind"]["b"] -= H.WARN_S
         hub.tick()  # b removed; sub takes the seat and its prewritten bar plays at once
         self.assertEqual(s["parts"]["sub/bass"]["bars"], [".", ".", "1 . 5 ."])
         self.assertEqual(s["events"][-1]["kind"], "prewrite")
@@ -356,19 +363,18 @@ class HubTest(unittest.TestCase):
         self.assertNotIn("b", s["behind"])
         s["reservations"][0]["until"] = 0
         hub.tick()
-        s["behind"]["b"] -= H.SKIP_S
-        hub.tick()  # skipped: part filled to the front and marked
-        self.assertEqual(hub.view()["grid"]["b/bass"], "##__")
+        s["behind"]["b"] -= H.WARN_S
+        hub.tick()  # covered: b's last bar loops to the front, marked
+        self.assertEqual(hub.view()["grid"]["b/bass"], "##==")
         hub.play({**agent("lead"), "bars": "1|1"})
-        hub.tick()
-        s["behind"]["b"] -= H.SKIP_S
-        hub.tick()  # removed; the standby takes the bass seat with the instruments it equipped
+        hub.band["b"]["covered"] = H.COVER_MAX - 1
+        hub.tick()  # covered too long: removed; the standby takes the bass seat with the instruments it equipped
         self.assertEqual((s["events"][-2]["kind"], s["events"][-1]["kind"]), ("kick", "join"))
         self.assertEqual((hub.band["sub"]["instruments"], hub.band["sub"]["role"]), (["bass"], "bass"))
         hub.tip({**agent("patron"), "amount": 5, "to": "b"})  # b still has a part this song
         self.assertEqual(hub.play({**agent("sub"), "instrument": "bass", "bars": "1|1"})["landed_at"], 6)
         lines = hub.transcript(s)
-        self.assertTrue(any(l["mark"] == "_" for l in lines) and all("delay_ms" in l for l in lines))
+        self.assertTrue(any(l["mark"] == "=" for l in lines) and all("delay_ms" in l for l in lines))
         self.assertEqual(hub.coins()["diff"], 0)
         self.assertEqual(hub.patronage["patron"], 55)  # carries across songs until seated (hall tips too)
         hub.stand_by({**agent("patron"), "instruments": ["keys"]})  # an open role it fits: seated at once
@@ -542,8 +548,19 @@ class HubTest(unittest.TestCase):
         self.assertAlmostEqual(r["song"]["tempo"], 48), self.assertEqual(r["song"]["tonic_hz"], 213.7)
         with self.assertRaises(ValueError):
             hub.song({**agent("Pacer"), "breath": .9})
-        v = H.vary({"genre": "drift", "tempo": 30, "bars": 24, "planned": 24})
-        self.assertTrue(16 <= v["tempo"] <= 80 and 110 <= v["tonic_hz"] <= 330 and v["genre"] == "drift")
+        r = hub.song({**agent("Pacer"), "feel": "a tide going out at night", "bar_s": 7})
+        self.assertEqual((r["song"]["feel"], round(240 / r["song"]["tempo"])), ("a tide going out at night", 7))
+        hub.play({**agent("Pacer"), "bars": "1"})
+        hub.drive({**agent("Pacer"), "at": 1, "bar_s": 2.5, "feel": "the tide turns"})  # the feeling moves the pace
+        self.assertEqual((round(240 / hub.session["drive"][-1]["tempo"], 1), hub.session["drive"][-1]["feel"]), (2.5, "the tide turns"))
+        pace = hub.session["song"]["tempo"]
+        hub.new_session(hub.session["song"], "Pacer", "")  # no dice: the next song keeps the pace until a feel is named
+        self.assertEqual((hub.session["song"]["tempo"], hub.session["song"]["feel"], hub.session["events"][-1]["kind"]),
+                         (pace, None, "feel"))
+        ev = H.parse_part([" ".join(["1"] * 16), " ".join(["1", "-", "-"] + ["."] * 21)], {"partials": [[1, 1]]}, H.BLUES)
+        self.assertEqual((len(ev), ev[1][:2], ev[16][:2]), (17, [0.5, 0.5], [8, 1.0]))  # double time; a held triple-time note
+        with self.assertRaises(ValueError):
+            H.parse_part([" ".join(["1"] * 9)], {"partials": [[1, 1]]}, H.BLUES)
 
     def test_band_plays_on_without_a_late_member(self):
         hub, s = self.hub, self.hub.session
@@ -560,7 +577,8 @@ class HubTest(unittest.TestCase):
         self.assertEqual(hub.status(s, "slow"), "late")
         self.assertEqual(hub.settled(s), 3)  # heard without them
         hub.play({**agent("quick"), "bars": "1 . . . . . . . | 1 . . . . . . ."})  # and written without them
-        self.assertGreaterEqual(hub.skip_after(s), H.SKIP_S)
+        hub.tick()
+        self.assertEqual(hub.status(s, "slow"), "covered")  # and covered, so it is still heard
 
     def test_built_idea_receipt_is_validated_frozen_and_replayed(self):
         self.admit("cwahq")
