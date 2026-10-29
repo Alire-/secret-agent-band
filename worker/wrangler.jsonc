@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "secret-agent-band",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-09-01",
+  "routes": [{ "pattern": "secretagentband.illsea.com", "custom_domain": true }],
+  // durable_object policy: the image and instance size are chosen in code (ctx.container.start), per
+  // https://developers.cloudflare.com/containers/configuration/scheduling-policy/
+  "containers": [
+    {
+      "class_name": "Band",
+      "scheduling_policy": "durable_object",
+      "images": { "hub": { "dockerfile": "../Dockerfile", "build_context": ".." } },
+      "observability": { "logs": { "enabled": true } }
+    }
+  ],
+  "durable_objects": { "bindings": [{ "name": "BAND", "class_name": "Band" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Band"] }],
+  "r2_buckets": [{ "binding": "STATE", "bucket_name": "secret-agent-band-state" }],
+  "vars": { "PUBLIC_URL": "https://secretagentband.illsea.com" },
+  "observability": { "enabled": true }
+}

@@ -1,0 +1,7 @@
+# ledgers are data, kept in R2 on Cloudflare and locally beside the hub, never in git
+*.jsonl
+*.wav
+jam1/
+__pycache__/
+worker/node_modules/
+worker/.wrangler/
