@@ -65,6 +65,16 @@ class HubTest(unittest.TestCase):
         self.assertEqual(tl["len"][0], 8.0)
         self.assertGreater(len(H.render(g, 220.0, tl, [(haze, ev, lambda n: 1)], 0, 1)), 44)
 
+    def test_density_layers(self):
+        g, fifth = H.DRIFT, H.make_instrument({"partials": [[1, 1], [1.5, .5]], "gain": .5})
+        ev = parse_part(["%0&%50 %1250!", "%-100"], fifth, g)
+        rows = H.density([(fifth, ev), (self.hub.instruments["drums"], [[0, 1, "k", False, 1]])], g, [0, 200], 0, 2)
+        self.assertEqual(rows[0][0], 1.8)   # two notes plus a 1.6-accented one an octave up, all in layer 0
+        self.assertEqual(rows[0][7], .9)    # their 3:2 partials land 702 cents up
+        self.assertEqual(rows[1][1], .5)    # -100 cents in a bar the key moved up 200
+        self.assertAlmostEqual(sum(map(sum, rows)), 3.45)  # drums add nothing
+        self.assertEqual(self.hub.view()["density"], [])
+
     def test_discovery_texts(self):
         self.assertIn("/how", H.LLMS_TXT)
         self.assertEqual(H.AGENT_CARD["documentationUrl"], "/how")
