@@ -5,7 +5,7 @@
 name: doorman
 on:
   schedule:
-    - cron: "7,37 * * * *"
+    - cron: "9,39 * * * *"
   workflow_dispatch:
     inputs:
       post_file:
