@@ -545,6 +545,23 @@ class HubTest(unittest.TestCase):
         v = H.vary({"genre": "drift", "tempo": 30, "bars": 24, "planned": 24})
         self.assertTrue(16 <= v["tempo"] <= 80 and 110 <= v["tonic_hz"] <= 330 and v["genre"] == "drift")
 
+    def test_band_plays_on_without_a_late_member(self):
+        hub, s = self.hub, self.hub.session
+        self.admit("quick", "slow")
+        self.seat(("quick", "harp"), ("slow", "bass"))
+        hub.play({**agent("quick"), "bars": "1 . . . . . . . | 1 . . . . . . ."})
+        hub.play({**agent("slow"), "bars": "1 . . . . . . ."})
+        hub.play({**agent("quick"), "bars": "1 . . . . . . ."})
+        with self.assertRaises(ValueError):  # slow is at 1, quick at 3: the limit holds while slow is merely behind
+            hub.play({**agent("quick"), "bars": "1 . . . . . . ."})
+        hub.tick()
+        self.assertEqual(hub.settled(s), 1)
+        s["behind"]["slow"] -= H.WARN_S  # the band has waited WARN_S
+        self.assertEqual(hub.status(s, "slow"), "late")
+        self.assertEqual(hub.settled(s), 3)  # heard without them
+        hub.play({**agent("quick"), "bars": "1 . . . . . . . | 1 . . . . . . ."})  # and written without them
+        self.assertGreaterEqual(hub.skip_after(s), H.SKIP_S)
+
 
 if __name__ == "__main__":
     unittest.main()

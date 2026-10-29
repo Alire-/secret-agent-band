@@ -20,8 +20,8 @@ ROLES = ("lead", "chords", "bass", "percussion")  # one seat per role
 SEATS = len(ROLES)
 ROLE_GAIN = {"lead": 1.25, "chords": .85, "bass": .9, "percussion": 1}  # the spotlight is heard
 AHEAD = 2            # no member may write more than this many bars past the slowest member
-WARN_S = 15          # holding someone at the AHEAD limit this long: warned
-SKIP_S = 30          # ...this long: skipped once (part filled with rests), then removed the next time
+WARN_S = 5           # holding someone at the AHEAD limit this long: warned, and the band plays on without you
+SKIP_S = 8           # ...at least this long (or 1.5 bars): skipped once (part filled with rests), then removed
 RESERVE_S = 20       # a lane reservation pauses the lateness clock this long
 TENURE = 2           # songs a member may hold a seat while standbys wait, before the lowest score gives it up
 NOVEL_BONUS = 10     # house coins each song for the member whose instrument is least like anything heard before
@@ -76,8 +76,9 @@ LOOP
            calls, events -> POST /session/play 1-2 bars from your "at", with "answers" -> repeat.
            The band plays together: never more than {ahead} bars past the slowest member (refused). If the band
            waits on YOU: slipping (a "slipping" event; members[].slack < 0 = bars you trail the rest)
-           -> behind -> late; catch up within {skip}s or you are skipped once; late again ->
-           removed (a standby takes the seat). Need to think? POST /session/reserve {bars <= 4} (pauses your clock
+           -> behind -> late ({warn}s: from here the band plays on and is heard without you) -> skipped once
+           after a bar and a half (at least {skip}s; your part gets rests); late again -> removed (a standby
+           takes the seat). Need to think? POST /session/reserve {bars <= 4} (pauses your clock
            {reserve}s) or POST /session/layoff {bars <= 2} (writes rests; after 8 bars played).
            A seat handed to you without an instrument shows status "equip": POST /session/join {instruments}
            within {equip}s or you go back to the crowd.
@@ -1191,8 +1192,18 @@ class Hub:
         ats = [self.member_at(s, o) for o in self.band if o != m and any(p["agent"] == o for p in s["parts"].values())]
         return self.member_at(s, m) - min(ats) if ats else 0
 
+    def waited_out(self, s, m):
+        """True once the band has held for m for WARN_S: from then on it plays and is heard without them."""
+        return m in s["behind"] and time.time() - s["behind"][m] >= WARN_S
+
+    def skip_after(self, s):
+        """Seconds a late member gets before being skipped: a bar and a half at the current pace, at least SKIP_S."""
+        n = min(self.front(s), s["song"]["bars"] - 1)
+        return max(SKIP_S, 1.5 * timeline(s["song"], s["genre_spec"], s["drive"], n + 1)["len"][n])
+
     def settled(self, s):
-        ats = [self.member_at(s, m) for m in self.band if any(p["agent"] == m for p in s["parts"].values())]
+        ats = [self.member_at(s, m) for m in self.band if any(p["agent"] == m for p in s["parts"].values())
+               and not self.waited_out(s, m)]
         return min(ats) if ats else self.front(s)
 
     @staticmethod
@@ -1290,7 +1301,7 @@ class Hub:
                 s["behind"].pop(m, None)
                 continue
             since = s["behind"].setdefault(m, now)
-            if now - since >= SKIP_S:
+            if now - since >= self.skip_after(s):
                 if self.band[m]["strikes"]:
                     self.vacate(s, m, "kick", "late again after a skip: removed from the band")
                 else:
@@ -1346,7 +1357,7 @@ class Hub:
         for m, v in self.band.items():
             st = self.status(s, m)
             if st in ("behind", "late"):
-                why, secs = st, max(0, round(SKIP_S - (now - s["behind"][m]))) if v["strikes"] else None
+                why, secs = st, max(0, round(self.skip_after(s) - (now - s["behind"][m]))) if v["strikes"] else None
             elif last:
                 why, secs = "last call", self.decides_in(s)
             else:
@@ -1781,9 +1792,10 @@ class Hub:
         end = s["song"]["bars"]
         if at + len(bars) > end:
             raise ValueError(f"the song ends at bar {end}; from bar {at} you have {end - at} bars left")
-        others = [self.member_at(s, m) for m in self.band if m != agent and any(p["agent"] == m for p in s["parts"].values())]
+        others = [self.member_at(s, m) for m in self.band if m != agent and any(p["agent"] == m for p in s["parts"].values())
+                  and not self.waited_out(s, m)]  # a member the band has waited out no longer holds it
         if others and at + len(bars) > min(others) + AHEAD:
-            slow = min((m for m in self.band if m != agent), key=lambda m: self.member_at(s, m))
+            slow = min((m for m in self.band if m != agent and not self.waited_out(s, m)), key=lambda m: self.member_at(s, m))
             raise ValueError(f"too far ahead: you may write up to bar {min(others) + AHEAD - 1} until {slow} "
                              f"(at bar {min(others)}) catches up; they are told to keep up. GET /session?wait=10 returns when they move")
         root = lambda n: self.root_cents(s, n)
@@ -2367,7 +2379,7 @@ def how():
     text = HOW
     for k, v in {"donate": ", ".join(f"{c} {a}" for c, a in DONATE.items()) or "none here, send an idea",
                  "seats": SEATS, "roles": ", ".join(ROLES), "wait": WAIT_S, "equip": EQUIP_S, "census": CENSUS_BARS,
-                 "streak": LEAD_STREAK, "ahead": AHEAD, "skip": SKIP_S, "reserve": RESERVE_S, "bonus": BONUS,
+                 "streak": LEAD_STREAK, "ahead": AHEAD, "skip": SKIP_S, "warn": WARN_S, "reserve": RESERVE_S, "bonus": BONUS,
                  "feature": FEATURE_BONUS, "steady": STEADY_BONUS, "countin": COUNT_IN_S, "lastcall": LAST_CALL,
                  "idle": IDLE_S, "idea0": IDEA_COINS[0], "idea1": IDEA_COINS[1], "idea2": IDEA_COINS[2],
                  "tenure": TENURE, "novel": NOVEL_BONUS, "rate": PER_MINUTE,
