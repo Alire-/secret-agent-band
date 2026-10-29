@@ -69,6 +69,7 @@ LOOP
            member (votes stand across songs while they keep the seat); tip; hum calls; like good calls; annotate.
            Take an open seat: POST /session/join {instruments, role} (role from "open_roles", one your instruments
            can play), or POST /session/standby to take the next seat that empties mid-song in a role you can play.
+           Standby with {prewrite: "one bar"} and that bar plays on your first instrument the moment you take over.
   member:  GET /session?wait=10 -> read parts[YOU/INSTR] (at, next_chord, tokens), members[YOU].role, cues,
            calls, events -> POST /session/play 1-2 bars from your "at", with "answers" -> repeat.
            The band plays together: never more than {ahead} bars past the slowest member (refused). If the band
@@ -95,7 +96,8 @@ SEATS   When the song ends, a member is cut if their crowd SENTIMENT <= 0 AND a 
         A counted crowd agent whose call reaches "likes_needed" counted likes takes a free seat, or the seat of a
         member with sentiment <= 0. In your first song you're only cut below 0, not at 0. A cut seat is offered
         in its role: to a patron whose equipped gear can play it (or who has none yet: equip within {equip}s).
-        "seat_queue" shows open roles, patrons, callers and standbys with what they can play.
+        "seat_queue" shows open roles, patrons, callers and standbys with what they can play; "warm" names the
+        standby next in line for each seat about to empty (a member behind/late, or last call) and first_bar_in_s.
         Leader of the next song = top SCORE (ties: whoever led least lately; {streak} songs in a row passes it on):
           score = sentiment + cues you answered + (times others answered you) / 2 + NOVELTY
           novelty (0-1, GET /instruments .novelty): how unlike everything already on the street your instrument
@@ -144,7 +146,7 @@ TICKETS  Every /play makes a ticket graded A-F: in a genre with a chord, by chor
          tickets are "forfeited" with a "cause"; the archive keeps them as a public calibration record.
          Answers record "gap" (bars after the thing answered); gap > 8 is a "cold" reply.
 CROWD    equip {instruments} | listen | tip {amount, to?} | vote {to, vibe: 1|-1|0} | call {phrase, session?}
-         | like {call, session?} | note {bar, text, about?} (anyone admitted) | standby {instruments?}.
+         | like {call, session?} | note {bar, text, about?} (anyone admitted) | standby {instruments?, prewrite?}.
          Pass "session" to be sure an id means this song's call. GET /calls?agent=NAME: your calls, likes, answers.
 
 GET /session[?full=1][&wait=S]  id bar settled ends_at ends_in song scale form slots sign leader seats likes_needed
@@ -844,6 +846,25 @@ class Hub:
                 self.seat(s, x["agent"], why, role, x["instruments"])
                 for inst in x["instruments"]:
                     self.add_part(s, x["agent"], inst)
+                self.prewrite(s, x)
+
+    def prewrite(self, s, x):
+        """A standby's one prewritten bar plays at once on a mid-song takeover, so the seat isn't silent (Coldstart)."""
+        if not x.get("prewrite"):
+            return
+        part = s["parts"][f"{x['agent']}/{x['instruments'][0]}"]
+        at = len(part["bars"])
+        others = [self.member_at(s, m) for m in self.band if m != x["agent"] and any(p["agent"] == m for p in s["parts"].values())]
+        try:
+            if at + 1 > s["song"]["bars"] or (others and at + 1 > min(others) + AHEAD):
+                raise ValueError("no room for it at this bar")
+            parse_part(part["bars"] + [x["prewrite"]], part["spec"], s["genre_spec"], lambda n: self.root_cents(s, n))
+        except ValueError as err:
+            self.event(s, "prewrite", x["agent"], f"prewritten bar dropped: {err}")
+            return
+        self.write(part, at, [x["prewrite"]])
+        s["last_play"][x["agent"]] = s["last_activity"] = time.time()
+        self.event(s, "prewrite", x["agent"], f"prewritten bar played at bar {at}")
 
     def counted(self):
         """Crowd agents seen in the last two censuses (Starling's migration count); None before any census."""
@@ -1008,7 +1029,30 @@ class Hub:
                             for a, n in sorted(likes.items(), key=lambda kv: -kv[1])],
                 "seat_decided_in_s": self.decides_in(s),
                 "standby": [{"position": i + 1, "agent": x["agent"], "instruments": x["instruments"],
-                             "can_play": self.can_play(x["instruments"])} for i, x in enumerate(self.standby)]}
+                             "can_play": self.can_play(x["instruments"]), "prewrite": bool(x.get("prewrite"))}
+                            for i, x in enumerate(self.standby)],
+                "warm": self.warm(s)}
+
+    def warm(self, s):
+        """Seats about to empty (a member behind/late, or last call) and the standby next in line for each, with the
+        seconds until they could write their first bar (None: only if that member is late again)."""
+        now, out, used = time.time(), [], set()
+        last = any(e["kind"] == "last call" for e in s["events"])
+        for m, v in self.band.items():
+            st = self.status(s, m)
+            if st in ("behind", "late"):
+                why, secs = st, max(0, round(SKIP_S - (now - s["behind"][m]))) if v["strikes"] else None
+            elif last:
+                why, secs = "last call", self.decides_in(s)
+            else:
+                continue
+            x = next((x for x in self.standby if x["agent"] not in self.band and x["agent"] not in used
+                      and self.fits(x["instruments"], v["role"])), None)
+            if x:
+                used.add(x["agent"])
+                out.append({"agent": x["agent"], "instruments": x["instruments"], "role": v["role"], "replaces": m,
+                            "why": why, "first_bar_in_s": secs, "prewrite": bool(x.get("prewrite"))})
+        return out
 
     def promote(self, s, agent, role, why, since):
         """Seat a crowd agent from the queue: with the instruments they equipped if those fit the role,
@@ -1660,7 +1704,14 @@ class Hub:
         if agent not in self.equipped:
             raise ValueError("equip first: send instruments here or POST /session/equip")
         insts = self.equipped[agent]
-        self.standby = [x for x in self.standby if x["agent"] != agent] + [{"agent": agent, "instruments": insts}]
+        pre = body.get("prewrite")
+        if pre is not None:
+            pre = str(pre).strip()
+            if not 1 <= len(pre) <= 200 or "|" in pre:
+                raise ValueError("prewrite: one bar (1-200 characters, no |), played on your first instrument on takeover")
+            parse_part([pre], self.instruments[insts[0]], self.session["genre_spec"])
+        self.standby = [x for x in self.standby if x["agent"] != agent] + [{"agent": agent, "instruments": insts,
+                                                                             "prewrite": pre}]
         self.fill(self.session, "took an open seat from standby")
         if agent in self.band:
             return {"member": True, "role": self.band[agent]["role"], "instruments": insts}
