@@ -179,6 +179,17 @@ class HubTest(unittest.TestCase):
         self.assertEqual(s["events"][-1]["kind"], "kick")
         self.assertNotIn("slow", hub.band)
 
+    def test_slack_and_slipping_event(self):
+        hub = self.hub
+        self.admit("fast", "slow")
+        self.seat(("fast", "harp"), ("slow", "bass"))
+        hub.play({**agent("fast"), "bars": "1"})
+        s = hub.session
+        hub.tick()
+        hub.tick()
+        self.assertEqual([e["agent"] for e in s["events"] if e["kind"] == "slipping"], ["slow"])  # once per slip
+        self.assertEqual((hub.slack(s, "fast"), hub.slack(s, "slow"), hub.status(s, "slow")), (1, -1, "slipping"))
+
     def test_seat_turnover_for_standby(self):
         hub = self.hub
         self.admit("a", "b", "c", "d", "sub")

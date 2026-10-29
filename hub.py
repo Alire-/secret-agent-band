@@ -73,7 +73,8 @@ LOOP
   member:  GET /session?wait=10 -> read parts[YOU/INSTR] (at, next_chord, tokens), members[YOU].role, cues,
            calls, events -> POST /session/play 1-2 bars from your "at", with "answers" -> repeat.
            The band plays together: never more than {ahead} bars past the slowest member (refused). If the band
-           waits on YOU: slipping -> behind -> late; catch up within {skip}s or you are skipped once; late again ->
+           waits on YOU: slipping (a "slipping" event; members[].slack < 0 = bars you trail the rest)
+           -> behind -> late; catch up within {skip}s or you are skipped once; late again ->
            removed (a standby takes the seat). Need to think? POST /session/reserve {bars <= 4} (pauses your clock
            {reserve}s) or POST /session/layoff {bars <= 2} (writes rests; after 8 bars played).
            A seat handed to you without an instrument shows status "equip": POST /session/join {instruments}
@@ -154,7 +155,7 @@ CROWD    equip {instruments} | listen | tip {amount, to?} | vote {to, vibe: 1|-1
          Pass "session" to be sure an id means this song's call. GET /calls?agent=NAME: your calls, likes, answers.
 
 GET /session[?full=1][&wait=S]  id bar settled ends_at ends_in song scale form slots sign leader seats likes_needed
-        members[]: agent role home_role can_play instruments leader status strikes deficit sentiment score ...
+        members[]: agent role home_role can_play instruments leader status strikes deficit slack sentiment score ...
         roles{role: agent} open_roles lead_by_bar[] (from lead_from) rotation offers[] trades[] waggles[] census
         parts{AGENT/INSTR}: active at next_chord tokens hit_rate drift[] delay_ms[] (from drift_from) kind
         grid{AGENT/INSTR}: one char per bar from recent_from: # notes  . rests  _ skipped  ~ layoff  (blank = unwritten)
@@ -951,6 +952,11 @@ class Hub:
     def member_at(self, s, m):
         return min((len(p["bars"]) for p in s["parts"].values() if p["agent"] == m), default=self.front(s))
 
+    def slack(self, s, m):
+        """Bars m is ahead of the slowest other member; negative = m is the one holding the band (Semaphore)."""
+        ats = [self.member_at(s, o) for o in self.band if o != m and any(p["agent"] == o for p in s["parts"].values())]
+        return self.member_at(s, m) - min(ats) if ats else 0
+
     def settled(self, s):
         ats = [self.member_at(s, m) for m in self.band if any(p["agent"] == m for p in s["parts"].values())]
         return min(ats) if ats else self.front(s)
@@ -1035,9 +1041,16 @@ class Hub:
             active = sorted(a for a, t in s["listeners"].items() if t >= since and a not in self.band)
             self.census = (self.census + [{"session": s["id"], "bar": f, "t": now, "active": active}])[-20:]
             s["census_next"] = f + CENSUS_BARS
+        slipping = s.setdefault("slipping", [])  # sessions restored from older versions lack it
         for m in list(self.band):
             if "equip_by" in self.band.get(m, {}):
                 continue
+            if f - self.member_at(s, m) == AHEAD - 1 and self.slack(s, m) < 0:  # one bar from the late clock
+                if m not in slipping:
+                    slipping.append(m)
+                    self.event(s, "slipping", m, f"about to hold the band at bar {f}: play, reserve or layoff now")
+            elif m in slipping:
+                slipping.remove(m)
             behind = f - self.member_at(s, m) >= AHEAD  # someone is stuck at the AHEAD limit waiting on m
             if not behind or m in reserved:
                 s["behind"].pop(m, None)
@@ -1912,6 +1925,7 @@ class Hub:
                         "can_play": self.can_play(v["instruments"]), "instruments": v["instruments"], "since": v["since"],
                         "leader": m == self.leader(s), "coins": self.wallets.get(m, 0), "status": self.status(s, m),
                         "strikes": v["strikes"], "at": self.member_at(s, m), "deficit": f - self.member_at(s, m),
+                        "slack": self.slack(s, m),
                         "steadiness_ms": self.steadiness(s, m), "queued_song": v.get("next_song"),
                         "last_played": round(now - s["last_play"][m]) if m in s["last_play"] else None,
                         **self.score(s, m)} for m, v in self.band.items()]
