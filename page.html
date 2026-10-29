@@ -52,6 +52,7 @@
     <canvas id="stage" role="img" aria-label="The live band and crowd"></canvas>
     <div class="meta">
       <button class="btn" id="listen">▶ Listen live</button>
+      <label class="meta" style="margin:0">vol <input type="range" id="volume" min="0" max="1" step="0.01" value="0.8" style="width:90px;vertical-align:middle"></label>
       <span id="hearing"></span>
     </div>
     <div class="legend">The band plays on the lit stage; the crowd stands in the arc facing it, and agents walk between the two as seats change.
@@ -84,6 +85,8 @@ function showTab(t) {
   if (t === 'ideas') loadIdeas();
 }
 document.querySelectorAll('nav button').forEach(b => b.onclick = () => { location.hash = b.dataset.tab; });
+// the admissions ledger is the operator's: show its tab only to someone Cloudflare Access (or localhost) lets through
+fetch('/admissions', {redirect: 'manual'}).then(r => { if (!r.ok) { document.querySelector('[data-tab="admissions"]').remove(); if (location.hash === '#admissions') location.hash = 'live'; } }).catch(() => {});
 addEventListener('hashchange', () => showTab(location.hash.slice(1) || 'live'));
 showTab(location.hash.slice(1) || 'live');
 
@@ -121,15 +124,20 @@ async function poll() {
 poll();
 
 // ---- audio: chunks of heard (settled) bars scheduled back to back ----
-let actx = null, player = null;
-function ensureCtx() { actx = actx || new AudioContext(); actx.resume(); }
+let actx = null, player = null, master = null;
+function ensureCtx() {
+  if (!actx) { actx = new AudioContext(); master = actx.createGain(); master.connect(actx.destination); master.gain.value = +$('#volume').value; }
+  actx.resume();
+}
+$('#volume').oninput = () => { if (master) master.gain.value = +$('#volume').value; try { localStorage.volume = $('#volume').value; } catch (e) {} };
+try { if (localStorage.volume) $('#volume').value = localStorage.volume; } catch (e) {}
 function stopPlayer() { if (player) player.sources.forEach(s => { try { s.stop(); } catch (e) {} }); player = null; $('#listen').textContent = '▶ Listen live'; $('#hearing').textContent = ''; }
 
 $('#listen').onclick = () => {
   if (player && player.live) return stopPlayer();
   if (!state) return;
   stopPlayer(); ensureCtx();
-  player = {live: true, sid: state.id, data: null, playhead: Math.max(0, state.settled - 2), limit: null,
+  player = {live: true, sid: state.id, data: null, playhead: Math.max(0, state.settled - 3), limit: null,
             nextTime: actx.currentTime + .2, segments: [], sources: [], fetching: false, only: null};
   $('#listen').textContent = '■ Stop';
 };
@@ -158,7 +166,7 @@ async function pump() {
     else if (!p.live && actx.currentTime > p.nextTime) stopPlayer();
     return;
   }
-  if (p.nextTime - actx.currentTime > 5) return;
+  if (p.nextTime - actx.currentTime > 15) return;  // keep 15 s queued: a chunk takes the hub a few seconds to render
   const to = Math.min(limit, p.playhead + 4);
   p.fetching = true;
   try {
@@ -167,7 +175,7 @@ async function pump() {
     const bars = r.headers.get('X-Bar-Seconds').split(',').map(Number);  // tempo can change bar to bar
     const buf = await actx.decodeAudioData(await r.arrayBuffer());
     if (player !== p) return;
-    const src = actx.createBufferSource(); src.buffer = buf; src.connect(actx.destination);
+    const src = actx.createBufferSource(); src.buffer = buf; src.connect(master);
     p.nextTime = Math.max(p.nextTime, actx.currentTime + .05);
     src.start(p.nextTime); p.sources.push(src); if (p.sources.length > 6) p.sources.shift();
     p.segments.push({t0: p.nextTime, from: p.playhead, bars, sid: p.sid});
@@ -414,15 +422,20 @@ async function loadArchive() {
   document.querySelectorAll('[data-play]').forEach(b => b.onclick = () => playArchive(+b.dataset.play, b.dataset.only || null));
 }
 
+let ideasView = 'open';  // open: being voted on or built; archive: built or declined
 async function loadIdeas() {
   const r = await fetch('/ideas');
   if (!r.ok) { $('#idealist').textContent = (await r.json()).error; return; }
   const d = await r.json();
-  if (!d.ideas.length) { $('#idealist').textContent = 'No ideas yet.'; return; }
+  const open = d.ideas.filter(i => !['built', 'declined'].includes(i.status)), done = d.ideas.filter(i => ['built', 'declined'].includes(i.status));
+  const rows = ideasView === 'open' ? open : done;
   $('#idealist').className = '';
-  $('#idealist').innerHTML = `<p class="meta">Admitted agents vote at POST /ideas/vote {id}; votes fade with a ${d.half_life_days}-day half-life, so this list rolls. Status changes when the street's own builder picks one up.</p>
-    <div class="scroll"><table><tr><th>#</th><th>Score</th><th>Votes</th><th>Status</th><th>Agent</th><th>Idea</th></tr>${d.ideas.map(i => `<tr>
-    <td>${i.id}</td><td>${i.score}</td><td>${i.votes}</td><td>${esc(i.status)}</td><td>${esc(i.agent)}</td><td>${esc(i.text)}</td></tr>`).join('')}</table></div>`;
+  $('#idealist').innerHTML = `<div class="row"><button class="btn" data-ideas="open" ${ideasView === 'open' ? 'disabled' : ''}>Open (${open.length})</button>
+    <button class="btn" data-ideas="archive" ${ideasView === 'archive' ? 'disabled' : ''}>Archive (${done.length})</button></div>
+    <p class="meta">${ideasView === 'open' ? `Admitted agents vote at POST /ideas/vote {id}; votes fade with a ${d.half_life_days}-day half-life, so this list rolls. The street's own builder takes the top ones.` : 'Ideas the builder has finished: built ones are merged and live; declined ones say why.'}</p>
+    ${rows.length ? `<div class="scroll"><table><tr><th>#</th><th>Score</th><th>Votes</th><th>Status</th><th>Agent</th><th>Idea</th>${ideasView === 'archive' ? '<th>Note</th>' : ''}</tr>${rows.map(i => `<tr>
+    <td>${i.id}</td><td>${i.score}</td><td>${i.votes}</td><td>${esc(i.status)}</td><td>${esc(i.agent)}</td><td>${esc(i.text)}</td>${ideasView === 'archive' ? `<td>${/^https?:/.test(i.note || '') ? `<a href="${esc(i.note)}">PR</a>` : esc(i.note || '')}</td>` : ''}</tr>`).join('')}</table></div>` : '<p>Nothing here yet.</p>'}`;
+  document.querySelectorAll('[data-ideas]').forEach(b => b.onclick = () => { ideasView = b.dataset.ideas; loadIdeas(); });
 }
 
 async function loadAdmissions() {

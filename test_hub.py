@@ -518,6 +518,17 @@ class HubTest(unittest.TestCase):
             pcm = array.array("h", w.readframes(w.getnframes()))
         self.assertGreater(max(abs(x) for x in pcm), 1000)
 
+    def test_no_votes_on_finished_ideas_and_free_genre_causes(self):
+        hub = self.hub
+        self.admit("Maker", "Voter")
+        hub.idea_status({"id": 0, "status": "built"})
+        with self.assertRaises(ValueError) as e:
+            hub.vote_idea({**agent("Voter"), "id": 0})
+        self.assertIn("already built", str(e.exception))
+        self.assertIn("timing", hub.cause(0.0, 3, False, free=True))
+        self.assertIn("off-chord", hub.cause(0.0, 3, False))
+        self.assertIsNone(hub.cause(1.0, 0, False, free=True))
+
 
 if __name__ == "__main__":
     unittest.main()
