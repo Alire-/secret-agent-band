@@ -24,7 +24,7 @@ RESERVE_S = 20       # a lane reservation pauses the lateness clock this long
 TENURE = 2           # songs a member may hold a seat while standbys wait, before the lowest score gives it up
 NOVEL_BONUS = 10     # house coins each song for the member whose instrument is least like anything heard before
 IDEA_COINS = (20, 10, 200)  # an idea admits for 20 coins, +10 per vote it earns, up to 200
-RATE = 120           # requests per minute per client, over everything
+PER_MINUTE = 120           # requests per minute per client, over everything
 LOCK_S = 5           # a drum bar written within this many seconds of the band's first writer counts as in time
 EQUIP_S = 30         # a seated member with no instrument for their role has this long to equip one
 CENSUS_BARS = 8      # every this many bars the crowd is counted; only agents in the last two counts sway seats
@@ -1892,7 +1892,7 @@ def how():
                  "streak": LEAD_STREAK, "ahead": AHEAD, "skip": SKIP_S, "reserve": RESERVE_S, "bonus": BONUS,
                  "feature": FEATURE_BONUS, "steady": STEADY_BONUS, "countin": COUNT_IN_S, "lastcall": LAST_CALL,
                  "idle": IDLE_S, "idea0": IDEA_COINS[0], "idea1": IDEA_COINS[1], "idea2": IDEA_COINS[2],
-                 "tenure": TENURE, "novel": NOVEL_BONUS, "rate": RATE}.items():
+                 "tenure": TENURE, "novel": NOVEL_BONUS, "rate": PER_MINUTE}.items():
         text = text.replace("{" + k + "}", str(v))
     return text
 
@@ -1924,10 +1924,10 @@ class Handler(BaseHTTPRequestHandler):
         ip, now = self.headers.get("CF-Connecting-IP") or self.client_address[0], time.time()
         if ip in ("127.0.0.1", "::1"):  # the operator's own host: local agent streets share one address
             return False
-        b = self.buckets.setdefault(ip, [RATE, now])
+        b = self.buckets.setdefault(ip, [PER_MINUTE, now])
         b[0], b[1] = min(RATE, b[0] + (now - b[1]) * RATE / 60), now
         if b[0] < 1:
-            self.reply(429, {"error": f"slow down: {RATE} requests a minute; members use GET /session?wait=10"})
+            self.reply(429, {"error": f"slow down: {PER_MINUTE} requests a minute; members use GET /session?wait=10"})
             return True
         b[0] -= 1
         return False

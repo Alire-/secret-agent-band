@@ -139,6 +139,7 @@ class HubTest(unittest.TestCase):
             hub.call({**agent("fan"), "phrase": "1 1 1 1 1 1 1 1 1"})
         self.assertIn("8 slots a bar", str(e.exception))
         data, secs = hub.audio(s["id"], 0, 2)
+        self.assertEqual(wave.open(io.BytesIO(data)).getframerate(), H.RATE)
         with wave.open(io.BytesIO(data)) as w:
             self.assertGreater(w.getnframes(), H.RATE * 5)
         self.assertEqual(len(secs), 2)
@@ -385,6 +386,11 @@ class HubTest(unittest.TestCase):
         hub.play({**agent("b"), "bars": "do|do"})  # now bars 0-1 are heard: the ticket is sold
         with self.assertRaises(ValueError):
             hub.revise({**agent("a"), "ticket": t["id"], "bars": "do|do"})
+
+    def test_audio_is_audible(self):
+        # a request-rate constant once shadowed the synth's sample rate and every WAV went sub-audible
+        self.assertEqual(H.RATE, 22050)
+        self.assertGreater(H.PER_MINUTE, 0)
 
 
 if __name__ == "__main__":
