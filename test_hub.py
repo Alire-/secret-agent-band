@@ -1,4 +1,4 @@
-import io, json, os, tempfile, time, unittest, wave
+import array, io, json, os, tempfile, time, unittest, wave
 import hub as H
 from hub import Hub, parse_part
 
@@ -478,6 +478,39 @@ class HubTest(unittest.TestCase):
         self.assertEqual(again.coins()["diff"], 0)
         self.assertIn("glassbell", again.instruments)
         self.assertEqual(again.ideas[0]["paid"], hub.ideas[0]["paid"])
+
+    def test_sonic_pi_synth_instrument(self):
+        hub = self.hub
+        self.admit("Patch")
+        spec = {"synth": "prophet", "cutoff": 80, "res": .4, "attack": .3, "release": 2,
+                "fx": [{"name": "echo", "phase": .75, "decay": 4}, {"name": "reverb", "room": .9, "mix": .5}]}
+        inst = hub.new_entry({**agent("Patch"), "name": "glasswire", **spec}, hub.instruments, H.make_instrument)
+        self.assertEqual(inst["synth"], "prophet")
+        self.assertEqual([f["name"] for f in inst["fx"]], ["echo", "reverb"])
+        self.assertEqual(inst["params"]["cutoff"], 80)
+        self.assertGreater(inst["novelty"], 0)
+        for bad, what in (({"synth": "piano"}, "synth: one of"), ({"synth": "prophet", "divisor": 2}, "does not take divisor"),
+                          ({"synth": "fm", "cutoff": 500}, "cutoff"), ({"synth": "fm", "fx": [{"name": "gverb"}]}, "fx:"),
+                          ({"synth": "fm", "fx": [{"name": "reverb", "room": 3}]}, "room")):
+            with self.assertRaises(ValueError) as e:
+                H.make_instrument(bad)
+            self.assertIn(what, str(e.exception))
+        # the score is time-ordered and carries the chain; the render works with or without scsynth installed
+        g = H.DRIFT
+        tl = H.timeline({"tempo": 30}, g, [], 2)
+        ev = H.parse_part(["s0> - - - s4&s7 . . . s2~ . . . s8 . . .", "s3 . . . . . . . . . . . . . . ."],
+                          hub.instruments["glasswire"], g, lambda n: 0)
+        notes = [(H.slot_time(a, tl), H.slot_time(a + b, tl) - H.slot_time(a, tl), 220 * 2 ** (c / 1200), 1,
+                  d is True, (d[0] - c) if isinstance(d, list) else None) for a, b, c, d, _ in ev]
+        score = H.sc_score([(hub.instruments["glasswire"], notes)], 20.0)
+        self.assertIn(b"sonic-pi-fx_echo", score)
+        self.assertIn(b"note_slide", score)
+        times = [H.struct.unpack(">I", score[i + 12:i + 16])[0] for i in range(0, len(score), 1) if score[i:i + 8] == b"#bundle\0"]
+        self.assertEqual(times, sorted(times))
+        wav = H.render(g, 220.0, tl, [(hub.instruments["glasswire"], ev, lambda n: 1)], 0, 2)
+        with wave.open(io.BytesIO(wav)) as w:
+            pcm = array.array("h", w.readframes(w.getnframes()))
+        self.assertGreater(max(abs(x) for x in pcm), 1000)
 
 
 if __name__ == "__main__":

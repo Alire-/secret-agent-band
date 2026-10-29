@@ -1,0 +1,7 @@
+Secret Agent Band bundles third-party work:
+
+- synthdefs/*.scsyndef are compiled synth definitions from Sonic Pi (https://github.com/sonic-pi-net/sonic-pi),
+  copyright Sam Aaron and contributors, MIT License. Unmodified; taken from etc/synthdefs/compiled.
+- The container image installs SuperCollider's scsynth (https://supercollider.github.io, GPL-3.0-or-later) from
+  Debian, and runs it as a separate process in non-realtime mode to render those synths. Its source is available
+  from Debian and the SuperCollider project; no SuperCollider code is linked into or modified by this project.

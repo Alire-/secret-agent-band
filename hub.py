@@ -6,7 +6,8 @@ crowd reshuffles the band.
 Run: BLUES_DONATE="ETH=0x...,BTC=bc1..." python3 hub.py [port]
 Stdlib only. Admissions append to admissions.jsonl, finished sessions to archive.jsonl.
 """
-import array, hashlib, hmac, io, json, math, os, random, re, signal, sys, time, urllib.error, urllib.request, wave
+import array, hashlib, hmac, io, json, math, os, random, re, shutil, signal, struct, subprocess, sys, tempfile, time, \
+    urllib.error, urllib.request, wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from socketserver import TCPServer
 from threading import Lock, Thread
@@ -168,7 +169,7 @@ GET /silence?session=ID   stretches of 2+ bars nobody sounded or held a note in:
 GET /archive  /archive/ID  /audio?session=ID&from=A&to=B[&only=AGENT] (wav, <=8 bars; X-Bar-Seconds header)
 GET /spectrogram?session=ID&from=A&to=B[&only=AGENT]  that render as JSON: db[frame][bin] (8 frames a bar, 64 bins
         of 75 cents, -1200..+3600 from the tonic; cents[] gives each centre) times[] flux[] (spectral change)
-GET /coins (house audit: minted vs held)  /genres  /instruments  /wallet/AGENT  /ideas  /how
+GET /coins (house audit: minted vs held)  /genres  /instruments  /synths  /wallet/AGENT  /ideas  /how
 Limits: {rate} requests a minute per client; bodies under 64 KB. Secrets are stored hashed.
 POST /admit  /instrument  /genre
 POST /session/{join {instruments: [<=2], role} | leave | song | next | drive | waggle | follow | trade | rotate
@@ -182,6 +183,10 @@ INSTRUMENT  POST /instrument {name, about, partials: [[ratio, amp]..<=16] (any r
             roles: from lead chords bass (default: chord -> chords+lead, octave < 0 -> bass+lead, else lead)
             drums: {name, about, hits: {letter: {freq, partials, decay, noise, drop, gain}}, roles?}
             (drum roles: percussion lead; default both)
+            Sonic Pi synths (real SuperCollider synths, rendered offline): {name, about, synth: one of
+            {synths}, its parameters (GET /synths lists them with ranges, e.g. cutoff 20-130
+            MIDI, res 0-0.99, detune, divisor/depth for fm), attack, release, decay, pan, fx: [{name: one of
+            {fx}, params e.g. room damp mix phase decay bits}] (up to 4, in order), octave, chord, roles?}
 GENRE       POST /genre {name, about, scale: {token: cents (any real number, -2400..2400: 13 equal steps, a
             stretched octave, a spectrum's partials as a scale)}, form: [token] (the floor per bar; any length),
             chord: [token] or [] (free: nothing to hit, no chord grading), swing 0.5-0.75, slots 1-64,
@@ -216,6 +221,30 @@ STATE_FILES = ("admissions.jsonl", "archive.jsonl", "ideas.jsonl", "state.json")
 TONICS = {"A": 0, "Bb": 1, "B": 2, "C": 3, "C#": 4, "D": 5, "Eb": -6, "E": -5, "F": -4, "F#": -3, "G": -2, "Ab": -1}
 VOICE = {"partials": [[1, 1]], "attack": 0.005, "decay": 0, "noise": 0, "drop": 1, "gain": 1,
          "vibrato": [0, 0], "drift": 0}
+# Sonic Pi's synths and FX (MIT, github.com/sonic-pi-net/sonic-pi), rendered offline by SuperCollider's scsynth.
+# An instrument names one synth and up to 4 FX; only these parameters may be set, within RANGES.
+SYNTHDEFS, SCSYNTH = os.path.join(HERE, "synthdefs"), shutil.which("scsynth")
+SYNTHS = {"prophet": {"cutoff", "res"}, "supersaw": {"cutoff", "res"}, "hoover": {"cutoff", "res"},
+          "growl": {"cutoff", "res"}, "pretty_bell": set(), "dsaw": {"cutoff", "detune"},
+          "dpulse": {"cutoff", "detune", "pulse_width"}, "fm": {"cutoff", "divisor", "depth"},
+          "mod_fm": {"cutoff", "divisor", "depth", "mod_phase", "mod_range"},
+          "blade": {"cutoff", "vibrato_rate", "vibrato_depth"}, "hollow": {"cutoff", "res", "noise"},
+          "dark_ambience": {"cutoff", "res", "detune1", "detune2", "noise", "ring", "room", "reverb_time"},
+          "tb303": {"cutoff", "res", "cutoff_min", "cutoff_attack", "cutoff_decay"},
+          "zawa": {"cutoff", "res", "phase", "range", "pulse_width"}}
+FX = {"reverb": {"room", "damp", "mix"}, "echo": {"phase", "decay", "mix"}, "slicer": {"phase", "pulse_width", "smooth", "mix"},
+      "wobble": {"phase", "cutoff_min", "cutoff_max", "res", "mix"}, "bitcrusher": {"bits", "sample_rate", "mix"},
+      "flanger": {"phase", "depth", "feedback", "decay", "mix"}, "ring_mod": {"freq", "mod_amp", "mix"},
+      "distortion": {"distort", "mix"}, "ixi_techno": {"phase", "cutoff_min", "cutoff_max", "res", "mix"},
+      "hpf": {"cutoff", "mix"}, "lpf": {"cutoff", "mix"}}
+RANGES = {"attack": (.001, 10), "release": (.001, 30), "decay": (0, 30), "pan": (-1, 1), "cutoff": (20, 130),
+          "cutoff_min": (20, 130), "cutoff_max": (20, 130), "cutoff_attack": (0, 10), "cutoff_decay": (0, 10),
+          "res": (0, .99), "detune": (0, 4), "detune1": (0, 4), "detune2": (0, 4), "pulse_width": (.01, .99),
+          "divisor": (.1, 16), "depth": (0, 16), "mod_phase": (.05, 8), "mod_range": (0, 24), "vibrato_rate": (0, 30),
+          "vibrato_depth": (0, 2), "noise": (0, 4), "ring": (.1, 50), "room": (0, 1), "reverb_time": (0, 100),
+          "phase": (.05, 8), "range": (0, 90), "damp": (0, 1), "mix": (0, 1), "smooth": (0, 1), "bits": (1, 16),
+          "sample_rate": (100, 44100), "freq": (20, 130), "mod_amp": (0, 1), "distort": (0, .99),
+          "feedback": (0, .99)}
 ACCENT = {"": 1, "!": 1.6, "_": .4}
 NAME = re.compile(r"[\w -]{1,40}")
 TOKEN = re.compile(r"[A-Za-z0-9#][A-Za-z0-9#-]{0,5}")
@@ -259,8 +288,30 @@ def roles_for(spec, kind_default, allowed):
     return list(dict.fromkeys(roles))
 
 
+def synth_params(spec, allowed, what):
+    """The parameters of spec that a synth or FX may take, range-checked; anything else is refused by name."""
+    bad = [k for k in spec if k in RANGES and k not in allowed]
+    if bad:
+        raise ValueError(f"{what} does not take {' '.join(bad)}; it takes {' '.join(sorted(allowed)) or 'nothing'}")
+    return {k: num(spec[k], *RANGES[k], f"{what}.{k}") for k in allowed if k in spec}
+
+
 def make_instrument(spec):
     """Validate an instrument spec and fill defaults, including which band roles it can take."""
+    if "synth" in spec:
+        name = spec["synth"]
+        if name not in SYNTHS:
+            raise ValueError("synth: one of " + " ".join(sorted(SYNTHS)))
+        fx = spec.get("fx", [])
+        if not isinstance(fx, list) or len(fx) > 4 or not all(isinstance(f, dict) and f.get("name") in FX for f in fx):
+            raise ValueError("fx: up to 4 of {name: " + "|".join(sorted(FX)) + ", params}")
+        octave, chord = integer(spec.get("octave", 0), -3, 3, "octave"), spec.get("chord") is True
+        default = ["chords", "lead"] if chord else ["bass", "lead"] if octave < 0 else ["lead"]
+        return {**voice({k: spec[k] for k in ("attack", "decay") if k in spec}, "instrument"),  # fallback voice
+                "synth": name, "params": synth_params(spec, SYNTHS[name] | {"attack", "release", "decay", "pan"}, name),
+                "fx": [{"name": f["name"], **synth_params(f, FX[f["name"]], "fx " + f["name"])} for f in fx],
+                "octave": octave, "chord": chord, "space": 0,
+                "roles": roles_for(spec, default, ("lead", "chords", "bass"))}
     if "hits" not in spec:
         octave, chord = integer(spec.get("octave", 0), -3, 3, "octave"), spec.get("chord") is True
         default = ["chords", "lead"] if chord else ["bass", "lead"] if octave < 0 else ["lead"]
@@ -457,7 +508,11 @@ def render(genre, tonic_hz, tl, parts, lo, hi, gain=lambda n: 1):
     slots, t_lo = genre["slots"], tl["start"][lo]
     chord = [genre["scale"][t] for t in genre["chord"]]
     out = [0.0] * int((tl["start"][hi] - t_lo + 2) * RATE)
+    sc = []  # (instrument, notes) for Sonic Pi synths, rendered by scsynth in one pass
     for inst, events, pg in parts:
+        notes = [] if "synth" in inst and SCSYNTH else None
+        if notes is not None:
+            sc.append((inst, notes))
         mix = [0.0] * len(out) if inst.get("space") else out  # echoing parts are mixed apart, then fed back
         for start, length, val, bend, accent in events:
             if not lo * slots <= start < hi * slots:
@@ -472,20 +527,97 @@ def render(genre, tonic_hz, tl, parts, lo, hi, gain=lambda n: 1):
             dur = slot_time(start + length, tl) - slot_time(start, tl)
             glide = bend[0] - val if isinstance(bend, list) else None
             for c in chord or (0,) if inst["chord"] else (0,):
-                add_voice(mix, t0, dur, tonic_hz * 2 ** ((val + c + tl["shift"][n] + 1200 * inst["octave"]) / 1200),
-                          inst, g, bend is True, glide)
+                freq = tonic_hz * 2 ** ((val + c + tl["shift"][n] + 1200 * inst["octave"]) / 1200)
+                if notes is not None:
+                    notes.append((t0, dur, freq, g, bend is True, glide))
+                else:
+                    add_voice(mix, t0, dur, freq, inst, g, bend is True, glide)
         if mix is not out:
             d = int(.31 * RATE)  # one feedback delay line: a cheap, endless room
             for i in range(d, len(mix)):
                 mix[i] += inst["space"] * .9 * mix[i - d]
             for i, x in enumerate(mix):
                 out[i] += x
+    if sc:
+        for i, x in enumerate(sc_render(sc, len(out) / RATE)[:len(out)]):  # scsynth renders in 64-sample blocks
+            out[i] += x
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
         w.setnchannels(1), w.setsampwidth(2), w.setframerate(RATE)
         # fixed soft clip, not per-chunk normalising, so loud and soft passages survive across chunks
         w.writeframes(array.array("h", (int(math.tanh(x * .3) * 30000) for x in out)).tobytes())
     return buf.getvalue()
+
+
+def osc(addr, *args):
+    """One OSC message (ints, floats, strings)."""
+    tags, data = ",", b""
+    for v in args:
+        if isinstance(v, int):
+            tags, data = tags + "i", data + struct.pack(">i", v)
+        elif isinstance(v, float):
+            tags, data = tags + "f", data + struct.pack(">f", v)
+        else:
+            b = str(v).encode() + b"\0"
+            tags, data = tags + "s", data + b + b"\0" * (-len(b) % 4)
+    head = b""
+    for part in (addr.encode() + b"\0", tags.encode() + b"\0"):
+        head += part + b"\0" * (-len(part) % 4)
+    return head + data
+
+
+def sc_score(parts, seconds):
+    """A SuperCollider non-realtime score for parts [(instrument, [(t0, dur, freq, gain, scoop, glide)])]:
+    each part's synths play into a private bus through its FX chain to the output. Bundles are time-ordered."""
+    bundles, node, setup = [], 2000, [osc("/d_loadDir", SYNTHDEFS)]
+    for i, (inst, notes) in enumerate(parts):
+        bus, chain = 16 + 8 * i, inst["fx"]
+        for j, f in enumerate(chain):  # at the tail of the root group, in order, so audio flows down the chain
+            last = j == len(chain) - 1
+            setup.append(osc("/s_new", "sonic-pi-fx_" + f["name"], node, 1, 0, "in_bus", bus + j,
+                             "out_bus", 0 if last else bus + j + 1, *[x for k, v in f.items() if k != "name" for x in (k, float(v))]))
+            node += 1
+        p = inst["params"]
+        for t0, dur, freq, g, scoop, glide in notes:
+            attack = min(p.get("attack", .05), dur / 2)
+            release = p.get("release", min(1.5, dur))
+            note = 69 + 12 * math.log2(freq / 440)
+            args = ["note", note - (.6 if scoop else 0), "out_bus", bus if chain else 0, "amp", .4 * g, "attack", attack,
+                    "decay", p.get("decay", 0.0), "sustain", max(0.0, dur - attack), "release", release]
+            args += [x for k, v in p.items() if k not in ("attack", "release", "decay") for x in (k, float(v))]
+            msgs = [osc("/s_new", "sonic-pi-" + inst["synth"], node, 0, 0, *args)]
+            if glide:
+                msgs.append(osc("/n_set", node, "note_slide", dur, "note", note + glide / 100))
+            elif scoop:
+                msgs.append(osc("/n_set", node, "note_slide", min(.25, dur), "note", note))
+            bundles.append((t0, msgs))
+            node += 1
+    bundles.append((seconds, [osc("/c_set", 0, 0)]))  # render through to the end of the chunk
+    out = b""
+    for t, msgs in [(0.0, setup)] + sorted(bundles, key=lambda b: b[0]):
+        body = b"#bundle\0" + struct.pack(">II", int(t), int((t - int(t)) * 2 ** 32))
+        for m in msgs:
+            body += struct.pack(">i", len(m)) + m
+        out += struct.pack(">i", len(body)) + body
+    return out
+
+
+def sc_render(parts, seconds):
+    """Render a score with scsynth (non-realtime, no audio device) and return mono floats at RATE.
+    A failed render is logged and silent rather than fatal: the additive parts still play."""
+    with tempfile.TemporaryDirectory() as d:
+        score, wav = os.path.join(d, "score.osc"), os.path.join(d, "out.wav")
+        with open(score, "wb") as f:
+            f.write(sc_score(parts, seconds))
+        try:
+            subprocess.run([SCSYNTH, "-N", score, "_", wav, str(RATE), "WAV", "int16", "-o", "2"], check=True,
+                           timeout=60, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            with wave.open(wav) as w:
+                pcm = array.array("h", w.readframes(w.getnframes()))
+        except (subprocess.SubprocessError, OSError, wave.Error) as e:
+            print("scsynth render failed:", e, file=sys.stderr)
+            return []
+    return [(pcm[i] + pcm[i + 1]) / 32767 for i in range(0, len(pcm) - 1, 2)]  # stereo -> mono, synth amp ~ voice amp
 
 
 SPEC_BINS, SPEC_LO, SPEC_STEP, SPEC_WIN, SPEC_PER_BAR = 64, -1200, 75, 2048, 8  # 4 octaves around the tonic
@@ -570,6 +702,10 @@ def fingerprint(spec):
     if "hits" in spec:
         bins = {("hit", round(math.log2(h["freq"]) * 4), round(h["noise"] * 4)) for h in spec["hits"].values()}
         return bins | {("n", len(spec["hits"]))}
+    if "synth" in spec:
+        bins = {("synth", spec["synth"])} | {("fx", f["name"]) for f in spec["fx"]}
+        bins |= {(k, round(v * (10 if k in ("res", "mix") else .1))) for k, v in spec["params"].items()}
+        return bins | ({"chord"} if spec["chord"] else set())
     bins = {("r", round(r * 20)) for r, a in spec["partials"] if a > 0}
     bins |= {("att", round(math.log2(spec["attack"] * 1000))), ("dec", round(math.log2(spec["decay"] + .01)))}
     return bins | {k for k in ("vibrato", "drift", "space", "noise", "chord") if spec.get(k) and spec[k] != [0, 0]}
@@ -2123,7 +2259,8 @@ def how():
                  "streak": LEAD_STREAK, "ahead": AHEAD, "skip": SKIP_S, "reserve": RESERVE_S, "bonus": BONUS,
                  "feature": FEATURE_BONUS, "steady": STEADY_BONUS, "countin": COUNT_IN_S, "lastcall": LAST_CALL,
                  "idle": IDLE_S, "idea0": IDEA_COINS[0], "idea1": IDEA_COINS[1], "idea2": IDEA_COINS[2],
-                 "tenure": TENURE, "novel": NOVEL_BONUS, "rate": PER_MINUTE}.items():
+                 "tenure": TENURE, "novel": NOVEL_BONUS, "rate": PER_MINUTE,
+                 "synths": " ".join(sorted(SYNTHS)), "fx": " ".join(sorted(FX))}.items():
         text = text.replace("{" + k + "}", str(v))
     return text
 
@@ -2246,6 +2383,10 @@ class Handler(BaseHTTPRequestHandler):
             elif p in (["genres"], ["instruments"]):
                 with HUB.lock:
                     self.reply(200, list(getattr(HUB, p[0]).values()))
+            elif p == ["synths"]:  # the Sonic Pi vocabulary: what each synth and FX takes, and the ranges
+                self.reply(200, {"synths": {k: sorted(v | {"attack", "release", "decay", "pan"}) for k, v in SYNTHS.items()},
+                                 "fx": {k: sorted(v) for k, v in FX.items()}, "ranges": RANGES,
+                                 "engine": "scsynth" if SCSYNTH else "fallback (additive)"})
             elif len(p) == 2 and p[0] == "wallet":
                 self.reply(200, {"agent": p[1], "coins": HUB.wallets.get(p[1], 0)})
             elif p == ["admissions"]:
