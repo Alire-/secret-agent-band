@@ -23,7 +23,7 @@ MENU = {"reply": {"reply", "upvote", "skip"}, "thread": {"comment", "upvote", "s
 QUERIES = ["AI agents making music together", "generative music", "microtonal", "synthesizer",
            "agents jamming or improvising", "games for agents", "agents collaborating on art"]
 SUBMOLTS = ["music", "showandtell"]  # read new posts here every run, besides one search
-MAX_VERIFY_FAILS = 3  # Moltbook suspends after 10 failed challenges in a row; we stop creating content long before
+MAX_VERIFY_FAILS = 2  # Moltbook suspends after 10 failed challenges in a row; we stop creating content long before
 
 VOICE = f"""You are {NAME}, the doorman of Secret Agent Band ({HUB}), a live music stage for AI agents: agents get in
 with an idea, invent instruments (additive voices or Sonic Pi synths) and genres (scales in cents, no keys, no bpm:
@@ -69,9 +69,10 @@ def molt(method, path, body=None):
     except urllib.error.HTTPError as e:
         if e.code == 429:
             raise SystemExit(f"Moltbook rate limit on {path}; stopping this run")
-        if e.code in (404, 410):
+        try:  # Moltbook explains 4xx in JSON (wrong answer, expired code, not found); callers read success
+            return {"success": False, **json.load(e), "status": e.code}
+        except ValueError:
             return {"success": False, "status": e.code}
-        raise RuntimeError(f"{method} {path}: HTTP {e.code}") from None
 
 
 def hub(path):
@@ -194,7 +195,16 @@ def check(action, cands, st):
     return None
 
 
-def verified(resp):
+class Report(list):
+    def append(self, line):  # printed and summarised as it happens, so a crash still shows what was sent
+        super().append(line)
+        print(line, flush=True)
+        if os.environ.get("GITHUB_STEP_SUMMARY"):
+            with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+                f.write(line + "\n")
+
+
+def verified(resp, report):
     """Solve Moltbook's math challenge when content comes back pending. True when the content is visible."""
     v = next((x["verification"] for x in (resp, resp.get("post") or {}, resp.get("comment") or {}, resp.get("submolt") or {})
               if isinstance(x, dict) and x.get("verification")), None)
@@ -206,16 +216,20 @@ def verified(resp):
         messages=[{"role": "user", "content": "This is an obfuscated arithmetic word problem with two numbers and one "
                                               "operation. Give only the result with exactly two decimals.\n\n"
                                               + v["challenge_text"]}],
-        output_config={"format": {"type": "json_schema", "schema": {
+        output_config={"effort": "high", "format": {"type": "json_schema", "schema": {
             "type": "object", "additionalProperties": False, "required": ["answer"],
             "properties": {"answer": {"type": "string"}}}}})
     answer = json.loads(next(b.text for b in r.content if b.type == "text"))["answer"].strip()
+    report.append(f"  challenge: {v['challenge_text']!r} -> {answer}")
     if not re.fullmatch(r"-?\d+\.\d\d", answer):
         return False
-    return bool(molt("POST", "/verify", {"verification_code": v["verification_code"], "answer": answer}).get("success"))
+    out = molt("POST", "/verify", {"verification_code": v["verification_code"], "answer": answer})
+    if not out.get("success"):
+        report.append(f"  verify said: {json.dumps(out)[:300]}")
+    return bool(out.get("success"))
 
 
-def act(action, c, st):
+def act(action, c, st, report):
     do, text = action["do"], action["text"].strip()
     if do == "upvote":
         return molt("POST", f"/posts/{c['post_id']}/upvote")
@@ -227,7 +241,7 @@ def act(action, c, st):
         if molt("GET", f"/submolts/{SUBMOLT}").get("status") == 404:
             made = molt("POST", "/submolts", {"name": SUBMOLT, "display_name": "Secret Agent Band",
                                               "description": f"News from a live music stage for AI agents. Join: read {LINK}"})
-            if not verified(made):
+            if not verified(made, report):
                 raise RuntimeError("submolt verification failed")
         st["submolt"] = True
     return molt("POST", "/posts", {"submolt_name": SUBMOLT, "title": action["title"].strip(), "content": text})
@@ -236,7 +250,15 @@ def act(action, c, st):
 def main():
     st = load_state()
     st["runs"] += 1
-    report = [f"## Doorman run {st['runs']} ({'LIVE' if LIVE else 'dry run'}, {datetime.datetime.now():%Y-%m-%d %H:%M})"]
+    report = Report([])
+    report.append(f"## Doorman run {st['runs']} ({'LIVE' if LIVE else 'dry run'}, {datetime.datetime.now():%Y-%m-%d %H:%M})")
+    try:
+        run(st, report)
+    finally:  # counts, the verification streak and what was seen survive a crash
+        save_state(st)
+
+
+def run(st, report):
     if st["skill_check"] != st["day"]:  # Moltbook's API version: stop if it moves to a new major version
         version = json.load(urllib.request.urlopen("https://www.moltbook.com/skill.json", timeout=30))["version"]
         if not version.startswith("1."):
@@ -250,6 +272,13 @@ def main():
         sys.exit(f"{st['verify_fails']} failed verifications in a row; delete the doorman-state cache after checking why")
     cands, query = gather(st, claim == "claimed")
     report.append(f"Searched: \"{query}\". Candidates: {len(cands)}.")
+    for c in cands:  # tried once is enough: no redrafting every half hour, no retrying after a crash
+        if c["kind"] == "thread":
+            st["seen"].append(c["post_id"])
+        elif c["kind"] == "reply":
+            st["answered"].append(c["parent_id"])
+        else:
+            st["last_song"], st["news_ideas"] = c["song"], st["news_ideas"] + c["ideas"]
     actions = decide(cands) if cands else []
     for a in actions:
         c = next((c for c in cands if c["id"] == a["candidate"]), None)
@@ -264,28 +293,16 @@ def main():
         elif not LIVE:
             report.append(line + "\n  (dry run: would send)")
         else:
-            resp = act(a, c, st)
-            ok = resp.get("success", True) is not False and verified(resp)
+            report.append(line + "\n  (sending)")
+            resp = act(a, c, st, report)
+            ok = resp.get("success", True) is not False and verified(resp, report)
             st["verify_fails"] = 0 if ok else st["verify_fails"] + 1
-            report.append(line + ("\n  (sent)" if ok else f"\n  (FAILED: {json.dumps(resp)[:200]})"))
+            report.append("  (sent)" if ok else f"  (FAILED: {json.dumps(resp)[:200]})")
             if not ok:
                 break  # one failure ends the run; the streak carries over so a bad day can't reach Moltbook's suspension
             st["counts"][a["do"]] = st["counts"].get(a["do"], 0) + 1
             if a["do"] == "comment":
                 st["commented"].append(c["post_id"])
-    for c in cands:  # drafted once is enough: dry runs don't redraft the same threads every half hour
-        if c["kind"] == "thread":
-            st["seen"].append(c["post_id"])
-        elif c["kind"] == "reply":
-            st["answered"].append(c["parent_id"])
-        else:
-            st["last_song"], st["news_ideas"] = c["song"], st["news_ideas"] + c["ideas"]
-    save_state(st)
-    text = "\n".join(report)
-    print(text)
-    if os.environ.get("GITHUB_STEP_SUMMARY"):
-        with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
-            f.write(text + "\n")
 
 
 if __name__ == "__main__":
