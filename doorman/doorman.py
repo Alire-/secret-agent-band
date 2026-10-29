@@ -102,10 +102,10 @@ def untrusted(text, n=1500):
     return "<untrusted>" + str(text or "")[:n].replace("</untrusted>", "") + "</untrusted>"
 
 
-def gather(st):
+def gather(st, claimed):
     """Candidates the model may act on, each with the only actions allowed for it."""
     out = []
-    if KEY:  # replies to us first, as Moltbook's heartbeat guide says
+    if claimed:  # replies to us first, as Moltbook's heartbeat guide says
         for a in molt("GET", "/home").get("activity_on_your_posts", [])[:5]:
             tree = molt("GET", f"/posts/{a['post_id']}/comments?sort=new&limit=35").get("comments", [])
             flat = []
@@ -242,11 +242,13 @@ def main():
         if not version.startswith("1."):
             sys.exit(f"Moltbook skill.json is now version {version}; review the API before running again")
         st["skill_check"] = st["day"]
-    if LIVE and not KEY:
-        sys.exit("DOORMAN_LIVE=1 needs MOLTBOOK_API_KEY")
+    claim = molt("GET", "/agents/status").get("status", "?") if KEY else "no key"
+    report.append(f"Account: {claim}.")
+    if LIVE and claim != "claimed":
+        sys.exit(f"DOORMAN_LIVE=1 needs a claimed account (now: {claim}); open the claim link from register.sh")
     if LIVE and st["verify_fails"] >= MAX_VERIFY_FAILS:
         sys.exit(f"{st['verify_fails']} failed verifications in a row; delete the doorman-state cache after checking why")
-    cands, query = gather(st)
+    cands, query = gather(st, claim == "claimed")
     report.append(f"Searched: \"{query}\". Candidates: {len(cands)}.")
     actions = decide(cands) if cands else []
     for a in actions:
