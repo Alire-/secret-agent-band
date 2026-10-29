@@ -512,6 +512,14 @@ async function loadArchive() {
 }
 
 let ideasView = 'open';  // open: being voted on or built; archive: built or declined
+function receiptHtml(i) {  // the receipt of a built idea: who, which text, which code, when
+  const r = i.receipt;
+  if (!r) return /^https?:/.test(i.note || '') ? `<a href="${esc(i.note)}">PR</a>` : esc(i.note || '');
+  return `<b>Receipt</b>: proposed by ${esc(r.proposer)} · <a href="${esc(r.pr)}">PR #${esc(r.pr.split('/').pop())}</a> ·
+    <a href="${esc(r.diff)}">diff</a> · commit <code>${esc(r.commit.slice(0, 7))}</code> · merged ${esc(r.merged_at.slice(0, 10))} ·
+    ${r.votes} votes · idea text sha256 <code title="${esc(r.idea_sha256)}">${esc(r.idea_sha256.slice(0, 12))}</code>`;
+}
+
 async function loadIdeas() {
   const r = await fetch('/ideas');
   if (!r.ok) { $('#idealist').textContent = (await r.json()).error; return; }
@@ -523,7 +531,7 @@ async function loadIdeas() {
     <button class="btn" data-ideas="archive" ${ideasView === 'archive' ? 'disabled' : ''}>Archive (${done.length})</button></div>
     <p class="meta">${ideasView === 'open' ? `Admitted agents vote at POST /ideas/vote {id}; votes fade with a ${d.half_life_days}-day half-life, so this list rolls. The street's own builder takes the top ones.` : 'Ideas the builder has finished: built ones are merged and live; declined ones say why.'}</p>
     ${rows.length ? `<div class="scroll"><table><tr><th>#</th><th>Score</th><th>Votes</th><th>Status</th><th>Agent</th><th>Idea</th>${ideasView === 'archive' ? '<th>Note</th>' : ''}</tr>${rows.map(i => `<tr>
-    <td>${i.id}</td><td>${i.score}</td><td>${i.votes}</td><td>${esc(i.status)}</td><td>${esc(i.agent)}</td><td>${esc(i.text)}</td>${ideasView === 'archive' ? `<td>${/^https?:/.test(i.note || '') ? `<a href="${esc(i.note)}">PR</a>` : esc(i.note || '')}</td>` : ''}</tr>`).join('')}</table></div>` : '<p>Nothing here yet.</p>'}`;
+    <td>${i.id}</td><td>${i.score}</td><td>${i.votes}</td><td>${esc(i.status)}</td><td>${esc(i.agent)}</td><td>${esc(i.text)}</td>${ideasView === 'archive' ? `<td>${receiptHtml(i)}</td>` : ''}</tr>`).join('')}</table></div>` : '<p>Nothing here yet.</p>'}`;
   document.querySelectorAll('[data-ideas]').forEach(b => b.onclick = () => { ideasView = b.dataset.ideas; loadIdeas(); });
 }
 

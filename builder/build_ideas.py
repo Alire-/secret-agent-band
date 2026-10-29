@@ -46,9 +46,11 @@ def pick(ideas, n=MAX_IDEAS):
 
 
 def settle(ideas, dry):
-    """Ideas being built: a merged PR makes them built, a closed one declined."""
-    for i in (i for i in ideas if i["status"] == "building"):
-        r = sh("gh", "pr", "list", "--head", f"idea-{i['id']}", "--state", "all", "--json", "state,mergedAt,url", check=False)
+    """Ideas being built: a merged PR makes them built (with a receipt), a closed one declined.
+    Built ideas recorded before receipts existed get theirs filled in."""
+    for i in (i for i in ideas if i["status"] == "building" or (i["status"] == "built" and not i.get("receipt"))):
+        r = sh("gh", "pr", "list", "--head", f"idea-{i['id']}", "--state", "all", "--json", "state,mergedAt,url,mergeCommit",
+               check=False)
         prs = json.loads(r.stdout or "[]")
         if not prs:
             continue
@@ -56,8 +58,12 @@ def settle(ideas, dry):
         status = "built" if pr.get("mergedAt") else "declined" if pr["state"] == "CLOSED" else None
         if status:
             print(f"idea {i['id']}: PR {pr['url']} is {pr['state']}: {status}")
+            body = {"id": i["id"], "status": status, "note": pr["url"]}
+            if status == "built":
+                body["receipt"] = {"pr": pr["url"], "commit": (pr.get("mergeCommit") or {}).get("oid", ""),
+                                   "merged_at": pr["mergedAt"]}
             if not dry:
-                api("/ideas/status", {"id": i["id"], "status": status, "note": pr["url"]})
+                api("/ideas/status", body)
 
 
 def prompt(idea):
@@ -125,9 +131,12 @@ def build(idea, dry):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="list what would be built, change nothing")
+    ap.add_argument("--settle-only", action="store_true", help="record merged and closed PRs (and receipts), build nothing")
     args = ap.parse_args()
     ideas = api("/ideas")["ideas"]
     settle(ideas, args.dry_run)
+    if args.settle_only:
+        return
     chosen = pick(ideas)
     print(f"{len(chosen)} idea(s) to build" + (" (dry run)" if args.dry_run else ""))
     failed = 0

@@ -562,6 +562,18 @@ class HubTest(unittest.TestCase):
         hub.play({**agent("quick"), "bars": "1 . . . . . . . | 1 . . . . . . ."})  # and written without them
         self.assertGreaterEqual(hub.skip_after(s), H.SKIP_S)
 
+    def test_built_idea_receipt_is_validated_frozen_and_replayed(self):
+        self.admit("cwahq")
+        r = {"pr": "https://github.com/a/b/pull/12", "commit": "0123abcd" * 5, "merged_at": "2026-10-29T21:00:00Z"}
+        with self.assertRaises(ValueError):
+            self.hub.idea_status({"id": 0, "status": "built", "receipt": {**r, "pr": "https://evil.example/x"}})
+        out = self.hub.idea_status({"id": 0, "status": "built", "note": r["pr"], "receipt": r})["receipt"]
+        self.assertEqual((out["proposer"], out["diff"]), ("cwahq", r["pr"] + "/files"))
+        self.assertEqual(out["idea_sha256"], H.hashlib.sha256(self.hub.ideas[0]["text"].encode()).hexdigest())
+        again = Hub(**self.paths, ideas=self.hub.ideas_path)  # survives a restart
+        row = next(i for i in again.ideas_top()["ideas"] if i["id"] == 0)
+        self.assertEqual((row["receipt"], row["note"]), (out, r["pr"]))
+
     def test_discovery_files_are_absolute_and_consistent(self):
         d = H.discovery("https://band.example")
         card = d[".well-known/agent-card.json"][1]

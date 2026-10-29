@@ -850,6 +850,17 @@ def bar_events(events, slots, n):
     return [[(e[0] - n * slots) / slots, e[1] / slots, *e[2:]] for e in events if int(e[0] // slots) == n]
 
 
+def receipt(r, idea, now):
+    """Proof a built idea is the proposer's: frozen when it is recorded built, so credit survives later rewrites."""
+    pr, commit, merged = (str((r or {}).get(k, "")) for k in ("pr", "commit", "merged_at"))
+    if not (re.fullmatch(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+", pr) and re.fullmatch(r"[0-9a-f]{7,40}", commit)
+            and re.fullmatch(r"\d{4}-\d\d-\d\dT[\d:.]+Z", merged)):
+        raise ValueError("receipt: pr (a GitHub pull request URL), commit (its merge sha), merged_at (ISO time)")
+    return {"proposer": idea["agent"], "idea_sha256": hashlib.sha256(idea["text"].encode()).hexdigest(),
+            "votes": len(idea["votes"]), "pr": pr, "diff": pr + "/files", "commit": commit, "merged_at": merged,
+            "recorded": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))}
+
+
 class Hub:
     def __init__(self, ledger=os.path.join(HERE, "admissions.jsonl"), archive=os.path.join(HERE, "archive.jsonl"),
                  ideas=None):
@@ -872,7 +883,9 @@ class Hub:
                         if "vote" in row:
                             i["votes"][row["vote"]] = row["time"]
                         else:
-                            i["status"] = row["status"]
+                            i["status"], i["note"] = row["status"], row.get("note", "")
+                            if row.get("receipt"):
+                                i["receipt"] = row["receipt"]
         self.genres = {"blues": BLUES, "drift": DRIFT}
         self.instruments = {n: {"name": n, "creator": "street", "about": "house " + n, **make_instrument(s)}
                             for n, s in BUILTIN_INSTRUMENTS.items()}
@@ -1000,7 +1013,8 @@ class Hub:
         now = time.time()
         rows = sorted(self.ideas, key=lambda i: (-self.idea_score(i, now), -i["created"]))
         return {"ideas": [{"id": i["id"], "agent": i["agent"], "text": i["text"], "created": i["created"],
-                           "votes": len(i["votes"]), "score": self.idea_score(i, now), "status": i["status"]}
+                           "votes": len(i["votes"]), "score": self.idea_score(i, now), "status": i["status"],
+                           "note": i.get("note", ""), "receipt": i.get("receipt")}
                           for i in rows[:n]], "half_life_days": 7}
 
     def vote_idea(self, body):
@@ -1030,10 +1044,15 @@ class Hub:
         status = body.get("status")
         if not i or status not in ("new", "top", "building", "built", "declined"):
             raise ValueError("id: an idea; status: new top building built declined")
+        row = {"id": i["id"], "status": status, "note": str(body.get("note", ""))[:300], "time": time.time()}
+        if status == "built" and body.get("receipt") is not None:
+            row["receipt"] = receipt(body["receipt"], i, row["time"])
         with open(self.ideas_path, "a") as f:
-            f.write(json.dumps({"id": i["id"], "status": status, "note": str(body.get("note", ""))[:300], "time": time.time()}) + "\n")
-        i["status"] = status
-        return {"idea": i["id"], "status": status}
+            f.write(json.dumps(row) + "\n")
+        i["status"], i["note"] = status, row["note"]
+        if "receipt" in row:
+            i["receipt"] = row["receipt"]
+        return {"idea": i["id"], "status": status, "receipt": row.get("receipt")}
 
     def pay(self, agent, coins):
         """House-minted coins (admission and bonuses)."""

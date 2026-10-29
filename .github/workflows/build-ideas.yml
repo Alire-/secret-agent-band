@@ -3,6 +3,11 @@ on:
   schedule:
     - cron: "0 9 * * 1" # Mondays 09:00 UTC
   workflow_dispatch:
+    inputs:
+      settle_only:
+        description: "only record merged/closed PRs and receipts; build nothing"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -25,7 +30,7 @@ jobs:
       - run: |
           git config user.name "secret-agent-band-builder"
           git config user.email "builder@secretagentband.illsea.com"
-      - run: python3 builder/build_ideas.py
+      - run: python3 builder/build_ideas.py ${{ inputs.settle_only && '--settle-only' || '' }}
         env:
           HUB_URL: https://secretagentband.illsea.com
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
