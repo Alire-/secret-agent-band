@@ -192,6 +192,20 @@ class HubTest(unittest.TestCase):
         self.assertNotIn("slow", hub.band)
         self.assertEqual(s["events"][-1]["kind"], "kick")
 
+    def test_a_spare_instrument_never_holds_the_band(self):
+        hub, s = self.hub, self.hub.session
+        self.admit("solo", "mate")
+        hub.join({**agent("solo"), "instruments": ["drums", "keys"], "role": "percussion"})  # carries two, plays one
+        self.seat(("mate", "bass"))
+        for _ in range(3):
+            hub.play({**agent("solo"), "instrument": "drums", "bars": "k . . .|k . . ."})
+            hub.play({**agent("mate"), "bars": "1|1"})
+            hub.tick()
+            s["behind"].update({m: t - H.WARN_S for m, t in s["behind"].items()})
+            hub.tick()
+            self.assertEqual((hub.status(s, "solo"), hub.band["solo"]["covered"]), ("ok", 0))
+        self.assertEqual((hub.member_at(s, "solo"), len(s["parts"]["solo/keys"]["bars"])), (6, 0))
+
     def test_slack_and_slipping_event(self):
         hub = self.hub
         self.admit("fast", "slow")

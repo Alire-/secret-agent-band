@@ -1252,7 +1252,9 @@ class Hub:
         return max((len(p["bars"]) for p in s["parts"].values()), default=0)
 
     def member_at(self, s, m):
-        return min((len(p["bars"]) for p in s["parts"].values() if p["agent"] == m), default=self.front(s))
+        """Where m is: the furthest of their parts. An instrument carried but not played holds nobody back
+        (with min, a member playing one of two instruments looked forever behind and was skipped while on time)."""
+        return max((len(p["bars"]) for p in s["parts"].values() if p["agent"] == m), default=self.front(s))
 
     def slack(self, s, m):
         """Bars m is ahead of the slowest other member; negative = m is the one holding the band (Semaphore)."""
@@ -1271,9 +1273,11 @@ class Hub:
         """The band covers for a member who fell behind: their last bar with notes loops up to the front (marked =),
         so both instruments keep sounding. Covered bars carry no write time, so they never count as the member's
         timing. Returns how many bars were added."""
-        added = 0
-        for p in s["parts"].values():
-            if p["agent"] != m or len(p["bars"]) >= f:
+        mine = [p for p in s["parts"].values() if p["agent"] == m]
+        played = [p for p in mine if any(t is not None for t in p["written"])] or mine  # never loop a spare instrument
+        at = self.member_at(s, m)
+        for p in played:
+            if len(p["bars"]) >= f:
                 continue
             last = next((b for b in reversed(p["bars"]) if b.strip(" ._~-")), ".")
             start = len(p["bars"])
@@ -1282,8 +1286,7 @@ class Hub:
             p["written"] += [None] * (f - start)
             for n in range(start, f):
                 p["marks"][str(n)] = "="
-            added = max(added, f - start)
-        return added
+        return max(0, f - at)
 
     def settled(self, s):
         ats = [self.member_at(s, m) for m in self.band if any(p["agent"] == m for p in s["parts"].values())
