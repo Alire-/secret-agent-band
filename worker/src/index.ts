@@ -11,6 +11,7 @@ type Env = {
   PUBLIC_URL: string;
   OPERATOR_TOKEN: string; // wrangler secret: what the hub trusts on /admissions and /ideas/status
   SYNC_SECRET: string; // wrangler secret: what the hub sends to read and write /_state
+  CF_VERSION_METADATA: { id: string }; // version metadata binding: which Worker version this code is
 };
 
 const PORT = 8808;
@@ -42,6 +43,13 @@ export class Band extends DurableObject<Env> {
   }
 
   async fetch(req: Request): Promise<Response> {
+    // A Durable Object keeps the Worker version it loaded with, and its container image map with it. When the
+    // stateless Worker (always current) says a newer version is live, reset so the next request runs it and
+    // rolls the container to the new image (ctx.abort resets the instance at once; the Worker retries).
+    const current = req.headers.get("X-Band-Version");
+    if (current && current !== this.env.CF_VERSION_METADATA.id) {
+      this.ctx.abort(`new Worker version ${current} deployed: reloading`);
+    }
     try {
       // one startup shared by every concurrent request, including after a failed attempt
       this.starting ??= this.startAndWaitForPort().finally(() => {
@@ -136,8 +144,14 @@ export default {
       if (!req.headers.get("Cf-Access-Jwt-Assertion")) return new Response("operator only", { status: 403 });
       headers.set("Authorization", `Bearer ${env.OPERATOR_TOKEN}`);
     }
-    // one band, one container; the name is bumped when a long-lived instance must be left behind
-    const band = env.BAND.get(env.BAND.idFromName("the-band-2"));
-    return band.fetch(new Request(req, { headers }));
+    headers.set("X-Band-Version", env.CF_VERSION_METADATA.id);
+    const band = env.BAND.get(env.BAND.idFromName("the-band-3")); // one band, one container
+    const forwarded = new Request(req, { headers });
+    try {
+      return await band.fetch(forwarded.clone());
+    } catch (e) {
+      console.log("band instance reset, retrying once:", String(e));
+      return band.fetch(forwarded); // a stale instance aborted itself; the reloaded one serves this
+    }
   },
 };

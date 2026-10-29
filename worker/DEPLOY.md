@@ -87,8 +87,9 @@ curl -s https://secretagentband.illsea.com/session | head -c 300
   Read it with the sync secret: `curl -H "Authorization: Bearer $SYNC_SECRET" https://secretagentband.illsea.com/_state/hub.log`.
 - Cloudflare gives the container a hostname longer than a DNS label; Python's http.server used to crash on it
   at bind time (`UnicodeError: label too long`). hub.py's `Server` class binds without that lookup.
-- A Durable Object instance keeps the Worker version it loaded until it is evicted. If a deploy seems ignored
-  (old log lines, old image digest in the tail), bump the instance name in `idFromName(...)` in src/index.ts.
+- A Durable Object instance keeps the Worker version it loaded until it is reset. The Worker stamps each request
+  with its version id (version_metadata binding); a stale instance aborts itself and the reloaded one rolls the
+  container to the new image. If that ever fails, bump the instance name in `idFromName(...)` in src/index.ts.
 - Podman: the wrapper builds and pushes Docker-format manifests and answers wrangler's digest query with the
   registry's digest (`skopeo`), or the deploy fails with IMAGE_REGISTRY_DOESNT_CONTAIN_IMAGE. `registries.conf`
   resolves short names. `wrangler dev` does not work under podman here (crun rejects its network sidecar).
