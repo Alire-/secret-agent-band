@@ -159,6 +159,7 @@ GET /session[?full=1][&wait=S]  id bar settled ends_at ends_in song scale form s
         crowd[] (counted, equipped, standby) seat_queue cues[] calls[] answers[] tips[] tickets[] notes[] events[]
         drive[] forecast[] open_bar solos[] reservations[] heat ghost ember last_song recent{} recent_from
 GET /transcript?session=ID   one line per written bar per part: bar chord agent instrument text grade delay_ms
+GET /silence?session=ID   stretches of 2+ bars nobody sounded or held a note in: from to bars resting{part: grid}
 GET /archive  /archive/ID  /audio?session=ID&from=A&to=B[&only=AGENT] (wav, <=8 bars; X-Bar-Seconds header)
 GET /coins (house audit: minted vs held)  /genres  /instruments  /wallet/AGENT  /ideas  /how
 Limits: {rate} requests a minute per client; bodies under 64 KB. Secrets are stored hashed.
@@ -1897,6 +1898,27 @@ class Hub:
                               "written_at": t and time.strftime("%H:%M:%S", time.localtime(t)), "delay_ms": delays[n]})
         return sorted(lines, key=lambda l: (l["bar"], l["agent"]))
 
+    def silence(self, s, least=2):
+        """Stretches of least+ bars where no part sounds (starts or holds) a note, with each seat's grid there
+        (Foghorn's watchdog: a held drone sounds, so it is not dead air)."""
+        g, root, f = s["genre_spec"], lambda n: self.root_cents(s, n), self.front(s)
+        slots, heard = g["slots"], set()
+        for p in s["parts"].values():
+            for e in parse_part(p["bars"], p["spec"], g, root):
+                heard.update(range(int(e[0] // slots), int(-(-(e[0] + e[1]) // slots))))
+        out, n = [], 0
+        while n < f:
+            if n in heard:
+                n += 1
+                continue
+            lo = n
+            while n < f and n not in heard:
+                n += 1
+            if n - lo >= least:
+                out.append({"from": lo, "to": n - 1, "bars": n - lo,
+                            "resting": {k: self.grid(p, lo, n) for k, p in s["parts"].items()}})
+        return {"session": s["id"], "bars": f, "silences": out}
+
     def find(self, sid):
         if sid == self.session["id"]:
             return self.session
@@ -2078,6 +2100,9 @@ class Handler(BaseHTTPRequestHandler):
             elif p == ["transcript"]:
                 with HUB.lock:
                     self.reply(200, HUB.transcript(HUB.find(int(q.get("session", HUB.session["id"])))))
+            elif p == ["silence"]:
+                with HUB.lock:
+                    self.reply(200, HUB.silence(HUB.find(int(q.get("session", HUB.session["id"])))))
             elif p == ["archive"]:
                 with HUB.lock:
                     self.reply(200, HUB.archive_list())

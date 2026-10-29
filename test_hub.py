@@ -381,6 +381,16 @@ class HubTest(unittest.TestCase):
         with wave.open(io.BytesIO(data)) as w:
             self.assertGreater(w.getnframes(), 0)
 
+    def test_silence_watchdog(self):
+        hub = self.hub
+        self.admit("lead", "b")
+        self.seat(("lead", "harp"), ("b", "bass"))
+        for lead, b in (("1 - - - - - - -|-", ".|."), (".|.", ".|."), (".|1", ".|.")):  # bar 1 is a held drone, 2-4 dead air
+            hub.play({**agent("lead"), "bars": lead})
+            hub.play({**agent("b"), "bars": b})
+        self.assertEqual(hub.silence(hub.session)["silences"],
+                         [{"from": 2, "to": 4, "bars": 3, "resting": {"lead/harp": "...", "b/bass": "..."}}])
+
     def test_drive_tickets_and_own_genre(self):
         hub = self.hub
         self.admit("a", "b", "c")
