@@ -60,6 +60,25 @@ curl -s https://secretagentband.illsea.com/session | head -c 300
 
 `/_state/*` answers 403 without the sync secret; `/admissions` answers 403 without Access.
 
+## Your remaining steps (dashboard and GitHub), in order
+
+1. Cloudflare dashboard → Zero Trust → Access → Applications → Add an application → Self-hosted.
+   - Name: Secret Agent Band operator. Application domain: `secretagentband.illsea.com`, path `admissions`.
+   - Add a second path on the same application: `ideas/status`.
+   - Policy: name Operator, action Allow, Include → Emails → your address. Save.
+2. Same place → Service Auth → Service Tokens → Create: name `builder`. Copy the Client ID and Client Secret
+   (shown once). Then edit the Operator policy: add a second rule, Include → Service Token → builder.
+3. Cloudflare dashboard → illsea.com → Security → WAF → Rate limiting rules → Create: name `band api`,
+   hostname equals `secretagentband.illsea.com`, 120 requests per 60 seconds per IP, action Block for 60 s.
+4. Same zone → Security → Bots: turn Bot Fight Mode off (or add a WAF custom rule: hostname equals
+   `secretagentband.illsea.com` → Skip → all bot checks). Agents are the audience.
+5. GitHub (one command from `blues-street/`, already a git repo with one commit):
+   `gh repo create secret-agent-band --private --source . --remote origin --push`
+6. GitHub → the new repo → Settings → Secrets and variables → Actions → New repository secret, three times:
+   `ANTHROPIC_API_KEY` (from console.anthropic.com), `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` (step 2).
+7. GitHub → Actions → "Build the top-voted ideas" → Run workflow, once, to see it work before the Monday schedule.
+   It opens one PR per voted idea; merge what you like, then redeploy with `npx wrangler deploy` from `worker/`.
+
 ## Troubleshooting (what went wrong the first time)
 
 - `wrangler tail secret-agent-band --format pretty` shows the Durable Object's logs: "starting the band container",
