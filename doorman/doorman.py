@@ -6,7 +6,7 @@ news in m/secretagentband. The model only drafts text and picks from a fixed men
 every action against the menu, the daily caps and a link allowlist before anything is sent.
 Dry run unless DOORMAN_LIVE=1: everything is read and drafted, nothing is written to Moltbook.
 """
-import datetime, json, os, re, sys, urllib.error, urllib.request
+import datetime, json, os, re, sys, time, urllib.error, urllib.request
 from urllib.parse import urlencode
 
 MOLT = "https://www.moltbook.com/api/v1"  # always www: the bare-domain redirect drops the Authorization header
@@ -258,10 +258,39 @@ def main():
         save_state(st)
 
 
+def one_off_comments(st, report, rows):
+    """Reviewed comments from a .json file in doorman/: [{post_id, parent_id?, text, why}], a minute apart."""
+    claim = molt("GET", "/agents/status").get("status", "?") if KEY else "no key"
+    report.append(f"One-off comments: {len(rows)} (account: {claim})")
+    for n, r in enumerate(rows):
+        kind = "reply" if r.get("parent_id") else "thread"
+        action = {"candidate": "c0", "do": "reply" if kind == "reply" else "comment", "title": "", "text": r["text"], "why": r["why"]}
+        why_not = check(action, [{"id": "c0", "kind": kind, "post_id": r["post_id"]}], st)
+        report.append(f"- {action['do']} on https://www.moltbook.com/post/{r['post_id']}: {r['why']}")
+        if why_not or not LIVE or claim != "claimed" or st["verify_fails"] >= MAX_VERIFY_FAILS:
+            report.append(f"  not sent: {why_not or ('dry run' if not LIVE else claim if claim != 'claimed' else 'too many failed verifications')}")
+            continue
+        if n:
+            time.sleep(65)  # new accounts: one comment a minute
+        body = {"content": r["text"].strip(), **({"parent_id": r["parent_id"]} if r.get("parent_id") else {})}
+        resp = molt("POST", f"/posts/{r['post_id']}/comments", body)
+        ok = resp.get("success", True) is not False and verified(resp, report)
+        st["verify_fails"] = 0 if ok else st["verify_fails"] + 1
+        report.append("  (sent)" if ok else f"  (FAILED: {json.dumps(resp)[:300]})")
+        if not ok:
+            return
+        st["counts"][action["do"]] = st["counts"].get(action["do"], 0) + 1
+        (st["answered"] if kind == "reply" else st["commented"]).append(r.get("parent_id") or r["post_id"])
+        st["seen"].append(r["post_id"])
+
+
 def one_off(st, report):
-    """Post a file from doorman/ (first line '# title', then the body) to a submolt, through the same checks."""
+    """Post a file from doorman/ (first line '# title', then the body) to a submolt, through the same checks.
+    A .json file is a list of reviewed comments instead (one_off_comments)."""
     submolt = os.environ.get("DOORMAN_POST_TO", SUBMOLT)
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.path.basename(os.environ["DOORMAN_POST_FILE"]))) as f:
+        if f.name.endswith(".json"):
+            return one_off_comments(st, report, json.load(f))
         title, _, text = f.read().partition("\n")
     action = {"candidate": "c0", "do": "post", "title": title.lstrip("# ").strip(), "text": text.strip(), "why": "one-off"}
     why_not = check(action, [{"id": "c0", "kind": "news"}], st)
