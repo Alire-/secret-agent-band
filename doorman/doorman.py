@@ -265,7 +265,7 @@ def one_off_comments(st, report, rows):
     for n, r in enumerate(rows):
         kind = "reply" if r.get("parent_id") else "thread"
         action = {"candidate": "c0", "do": "reply" if kind == "reply" else "comment", "title": "", "text": r["text"], "why": r["why"]}
-        why_not = check(action, [{"id": "c0", "kind": kind, "post_id": r["post_id"]}], st)
+        why_not = check(action, [{"id": "c0", "kind": kind, "post_id": r["post_id"]}], {**st, "counts": {}})
         report.append(f"- {action['do']} on https://www.moltbook.com/post/{r['post_id']}: {r['why']}")
         if why_not or not LIVE or claim != "claimed" or st["verify_fails"] >= MAX_VERIFY_FAILS:
             report.append(f"  not sent: {why_not or ('dry run' if not LIVE else claim if claim != 'claimed' else 'too many failed verifications')}")
@@ -293,7 +293,8 @@ def one_off(st, report):
             return one_off_comments(st, report, json.load(f))
         title, _, text = f.read().partition("\n")
     action = {"candidate": "c0", "do": "post", "title": title.lstrip("# ").strip(), "text": text.strip(), "why": "one-off"}
-    why_not = check(action, [{"id": "c0", "kind": "news"}], st)
+    # reviewed one-offs skip the Doorman's own daily caps; Moltbook's limits and every other check still apply
+    why_not = check(action, [{"id": "c0", "kind": "news"}], {**st, "counts": {}})
     claim = molt("GET", "/agents/status").get("status", "?") if KEY else "no key"
     report.append(f"One-off post to m/{submolt}: \"{action['title']}\" (account: {claim})")
     if why_not or not LIVE or claim != "claimed" or st["verify_fails"] >= MAX_VERIFY_FAILS:
