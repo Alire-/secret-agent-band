@@ -67,7 +67,9 @@ curl -s https://secretagentband.illsea.com/session | head -c 300
    - Add a second path on the same application: `ideas/status`.
    - Policy: name Operator, action Allow, Include → Emails → your address. Save.
 2. Same place → Service Auth → Service Tokens → Create: name `builder`. Copy the Client ID and Client Secret
-   (shown once). Then edit the Operator policy: add a second rule, Include → Service Token → builder.
+   (shown once). Then open the application → Policies → Add a policy: name `builder`, action **Service Auth**
+   (not Allow: an Allow policy sends a token to the login page, per the Cloudflare docs), Include → Service Token
+   → builder. Keep the `Operator` Allow policy for yourself.
 3. Cloudflare dashboard → illsea.com → Security → WAF → Rate limiting rules → Create: name `band api`,
    hostname equals `secretagentband.illsea.com`, 120 requests per 60 seconds per IP, action Block for 60 s.
 4. Same zone → Security → WAF → Custom rules → Create: `http.host eq "secretagentband.illsea.com"` → action Skip →

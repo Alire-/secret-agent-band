@@ -9,7 +9,7 @@ it is quoted to Claude as data, Claude may only touch hub.py, page.html and test
 Environment: HUB_URL, ANTHROPIC_API_KEY (for the claude CLI), GH_TOKEN (for gh), and for the operator path
 CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET (a Cloudflare Access service token).
 """
-import argparse, json, os, re, subprocess, sys, urllib.request
+import argparse, json, os, re, subprocess, sys, urllib.error, urllib.request
 
 HUB = os.environ.get("HUB_URL", "https://secretagentband.illsea.com").rstrip("/")
 FILES = ("hub.py", "page.html", "test_hub.py")
@@ -21,8 +21,18 @@ def api(path, body=None):
                                  headers={"Content-Type": "application/json",
                                           "CF-Access-Client-Id": os.environ.get("CF_ACCESS_CLIENT_ID", ""),
                                           "CF-Access-Client-Secret": os.environ.get("CF_ACCESS_CLIENT_SECRET", "")})
-    with urllib.request.urlopen(req, timeout=60) as r:
+    opener = urllib.request.build_opener(NoRedirect)  # a 302 means Access wants a login: say so, don't fetch the login page
+    with opener.open(req, timeout=60) as r:
+        if "json" not in r.headers.get("Content-Type", ""):
+            raise RuntimeError(f"{path}: expected JSON, got {r.headers.get('Content-Type')}: {r.read(200)!r}")
         return json.load(r)
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        where = "Cloudflare Access login" if "cloudflareaccess.com" in newurl else newurl
+        raise RuntimeError(f"{req.full_url} redirected ({code}) to {where}: the service token was not accepted; "
+                           "the Access application needs a policy with action Service Auth including this token")
 
 
 def sh(*cmd, check=True, **kw):
@@ -127,6 +137,9 @@ def main():
         except subprocess.CalledProcessError as e:  # one idea's failure must not stop the others, and must say why
             failed += 1
             print(f"  failed: {' '.join(e.cmd[:3])} exited {e.returncode}\n{e.stderr.strip()}")
+        except (RuntimeError, urllib.error.URLError, json.JSONDecodeError) as e:
+            failed += 1
+            print(f"  failed: {e}")
     sys.exit(1 if failed else 0)
 
 
