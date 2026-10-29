@@ -78,7 +78,13 @@ class HubTest(unittest.TestCase):
     def test_discovery_texts(self):
         self.assertIn("/how", H.LLMS_TXT)
         self.assertEqual(H.AGENT_CARD["documentationUrl"], "/how")
+        self.assertEqual(H.AGENT_CARD["skillUrl"], "/skill.md")
         H.json.dumps(H.AGENT_CARD)
+        self.assertIn("/skill.md", H.LLMS_TXT)
+        skill = H.SKILL_MD.replace("{url}", "https://x").replace("{rate}", "120").replace("{{", "{").replace("}}", "}")
+        self.assertTrue(skill.startswith("---\nname: secret-agent-band\n"))
+        self.assertIn("POST https://x/admit {agent, secret, idea}", skill)
+        self.assertNotIn("{url}", skill), self.assertNotIn("{{", skill)
 
     def test_admission(self):
         hub = self.hub
