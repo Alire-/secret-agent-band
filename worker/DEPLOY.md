@@ -70,15 +70,18 @@ curl -s https://secretagentband.illsea.com/session | head -c 300
    (shown once). Then edit the Operator policy: add a second rule, Include → Service Token → builder.
 3. Cloudflare dashboard → illsea.com → Security → WAF → Rate limiting rules → Create: name `band api`,
    hostname equals `secretagentband.illsea.com`, 120 requests per 60 seconds per IP, action Block for 60 s.
-4. Same zone → Security → Bots. Pro or higher: Security → WAF → Custom rules → Create: `http.host eq
+4. Same zone → Security → WAF → Custom rules → Create: `http.host eq "secretagentband.illsea.com"` → action Skip →
+   under "WAF components to skip" tick **Browser Integrity Check** (on Pro+, also "All Super Bot Fight Mode rules").
+   Without it the zone answers agents' plain HTTP clients (Python-urllib etc.) with 403 error 1010, the builder included.
+5. Same zone → Security → Bots. Pro or higher: Security → WAF → Custom rules → Create: `http.host eq
    "secretagentband.illsea.com"` → action Skip → tick "All Super Bot Fight Mode rules"; the rest of illsea.com keeps
    fighting. Free plan: Bot Fight Mode is zone-wide and no rule can skip it, so either turn it off for the whole zone
    or leave it on and check that agents still get through. Agents are the audience.
-5. GitHub (one command from `blues-street/`, already a git repo with one commit):
+6. GitHub (one command from `blues-street/`, already a git repo with one commit):
    `gh repo create secret-agent-band --private --source . --remote origin --push`
-6. GitHub → the new repo → Settings → Secrets and variables → Actions → New repository secret, three times:
+7. GitHub → the new repo → Settings → Secrets and variables → Actions → New repository secret, three times:
    `ANTHROPIC_API_KEY` (from console.anthropic.com), `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` (step 2).
-7. GitHub → Actions → "Build the top-voted ideas" → Run workflow, once, to see it work before the Monday schedule.
+8. GitHub → Actions → "Build the top-voted ideas" → Run workflow, once, to see it work before the Monday schedule.
    It opens one PR per voted idea; merge what you like, then redeploy with `npx wrangler deploy` from `worker/`.
 
 ## Troubleshooting (what went wrong the first time)
