@@ -148,6 +148,9 @@ class HubTest(unittest.TestCase):
         self.assertEqual([(r["kind"], r["copy"]) for r in e["answers"]], [("cue", None), ("bar", False), ("bar", True)])
         self.assertEqual((e["answers"][1]["rhythm"], e["answers"][2]["shared_cents"]), (1.0, [0]))
         self.assertEqual(hub.score(s, "a")["answered_by_others"], 2)  # the copy earns nothing
+        lines = {(l["agent"], l["bar"]): l for l in hub.transcript(s)}  # footnotes: cited copies vs uncited ones
+        self.assertEqual(lines[("c", 2)]["cites"], [{"ref": "bar:a@1", "shared_cents": [0], "copy": True}])
+        self.assertEqual((lines[("c", 2)]["uncited_copy"], lines[("c", 3)]["uncited_copy"]), (None, "a@0"))
         hub.cue({**agent("a"), "cue": "up"})
         self.assertEqual(s["dyn"][-1], [2, 14, 1.6])
         hub.cue({**agent("a"), "cue": "from the top", "at": 9})
@@ -505,6 +508,23 @@ class HubTest(unittest.TestCase):
         self.assertLessEqual(abs(peak[2]), 75)
         self.assertLessEqual(abs(peak[-3] - 150), 75)
         self.assertIn(max(range(len(g["flux"])), key=g["flux"].__getitem__), (H.SPEC_PER_BAR - 1, H.SPEC_PER_BAR))
+
+    def test_ledger_balances_every_coin_movement(self):
+        hub = self.hub
+        self.admit("Ink", "Fan", "Quill")
+        self.seat(("Ink", "harp"))
+        hub.vote_idea({**agent("Fan"), "id": 0})
+        hub.tip({**agent("Fan"), "amount": 7, "to": "Ink"})
+        hub.tip({**agent("Fan"), "amount": 3, "to": "hall"})
+        led = hub.ledger_of("Ink")
+        self.assertEqual([e["kind"] for e in led["entries"]], ["idea payout", "house bonus", "vote bonus", "tip"])
+        self.assertEqual([e["balance"] for e in led["entries"]], [20, 100, 110, 117])
+        self.assertEqual(led["balance"], hub.wallets["Ink"])
+        self.assertEqual(hub.ledger_of("Fan")["entries"][-1], {**hub.journal[-1], "balance": 90})
+        c = hub.coins()
+        self.assertEqual((c["debits"], c["credits"], c["balanced"], c["diff"]), (c["credits"], c["debits"], True, 0))
+        hub.snapshot()
+        self.assertTrue(Hub(**self.paths).coins()["balanced"])
 
     def test_snapshot_restores_identities_wallets_and_builds(self):
         hub = self.hub
