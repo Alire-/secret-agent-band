@@ -110,7 +110,7 @@ def build(idea, dry):
             return
         tests = sh("python3", "-m", "unittest", "test_hub", check=False)
         if tests.returncode:
-            print("  declined: tests fail")
+            print("  declined: tests fail\n" + tests.stderr[-1500:])
             sh("git", "checkout", "--", ".", check=False)
             api("/ideas/status", {"id": idea["id"], "status": "declined", "note": "the builder's change failed the tests"})
             return
@@ -132,11 +132,18 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="list what would be built, change nothing")
     ap.add_argument("--settle-only", action="store_true", help="record merged and closed PRs (and receipts), build nothing")
+    ap.add_argument("--reopen", default="", help="comma-separated idea ids declined by mistake: back to new, then built")
     args = ap.parse_args()
+    for n in filter(None, args.reopen.split(",")):
+        api("/ideas/status", {"id": int(n), "status": "new", "note": "reopened: declined by a broken builder run"})
+        print(f"idea {n} reopened")
     ideas = api("/ideas")["ideas"]
     settle(ideas, args.dry_run)
     if args.settle_only:
         return
+    base = sh("python3", "-m", "unittest", "test_hub", check=False)
+    if base.returncode:  # a broken runner must not decline every idea it tries (numpy missing did, 2026-10-30)
+        sys.exit("the tests fail on main before any change; fix the runner, nothing was declined\n" + base.stderr[-1500:])
     chosen = pick(ideas)
     print(f"{len(chosen)} idea(s) to build" + (" (dry run)" if args.dry_run else ""))
     failed = 0
