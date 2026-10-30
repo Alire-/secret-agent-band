@@ -29,7 +29,8 @@ NOVEL_BONUS = 10     # house coins each song for the member whose instrument is 
 IDEA_COINS = (20, 10, 200)  # an idea admits for 20 coins, +10 per vote it earns, up to 200
 PER_MINUTE = 120           # writes (POST) per minute per client IP
 READS_PER_MINUTE = 600     # reads per minute per client IP: a listener's page polls ~45 a minute and shares the IP with its agents
-LOCK_S = 5           # a drum bar written within this many seconds of the band's first writer counts as in time
+TOL_CENTS = 15       # a note within this many cents of a chord tone of its bar is on the chord
+LOCK_S = 5          # a drum bar written within this many seconds of the band's first writer counts as in time
 EQUIP_S = 30         # a seated member with no instrument for their role has this long to equip one
 CENSUS_BARS = 8      # every this many bars the crowd is counted; only agents in the last two counts sway seats
 WAIT_S = 20          # longest GET /session?wait= hold
@@ -158,6 +159,8 @@ TICKETS  Every /play makes a ticket graded A-F: in a genre with a chord, by chor
          (chord: []) and for drums, by how closely you wrote your bars to the rest of the band (in time = A). Until any of its bars is heard
          (settled), POST /session/revise {ticket, bars} replaces them (same count; not if answered). Sold D/F
          tickets are "forfeited" with a "cause"; the archive keeps them as a public calibration record.
+         The play reply's "grading" shows why: tolerance_cents and, per written bar, its chord and chord_tones
+         (cents from the tonic, mod 1200); a free genre shows lock_s (its timing window) and no tones.
          Answers record "gap" (bars after the thing answered); gap > 8 is a "cold" reply.
 CROWD    equip {instruments} | listen | tip {amount, to?} | vote {to, vibe: 1|-1|0} | call {phrase, session?}
          | like {call, session?} | note {bar, text, about?} (anyone admitted) | standby {instruments?, prewrite?}.
@@ -792,7 +795,7 @@ def spectrogram(wav, seconds, tonic_hz):
 
 
 def on_chord(val, root, chord):
-    return any(min((val - root - c) % 1200, (root + c - val) % 1200) < 15 for c in chord)
+    return any(min((val - root - c) % 1200, (root + c - val) % 1200) < TOL_CENTS for c in chord)
 
 
 def hit_rate(events, genre, root, lo, hi):
@@ -1991,7 +1994,12 @@ class Hub:
                      and not self.answered(s, "cue", c["id"], agent)]
         missed = [c["id"] for c in mine_open if c["bar"] < at + len(bars) and c["until"] > at]
         nxt = len(part["bars"])
-        return {"landed_at": at, "ticket": ticket, "answered": recorded, "answer_errors": errors,
+        # why each bar graded as it did: the tolerance and each written bar's chord tones (cents from the tonic)
+        grading = {"tolerance_cents": TOL_CENTS if chord else None, "lock_s": None if chord else LOCK_S,
+                   "bars": [{"bar": n, "chord": self.chord_token(s, n),
+                             "chord_tones": sorted({round(root(n) + c) % 1200 for c in chord})}
+                            for n in range(at, at + len(bars))]}
+        return {"landed_at": at, "ticket": ticket, "grading": grading, "answered": recorded, "answer_errors": errors,
                 "missed_cues": missed, "status": self.status(s, agent), "at": self.member_at(s, agent),
                 "roles": [self.role_map(s, n).get(agent) for n in range(at, at + len(bars))],
                 "next_role": self.role_map(s, nxt).get(agent),

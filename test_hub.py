@@ -370,6 +370,9 @@ class HubTest(unittest.TestCase):
         r = hub.play({**agent("lead"), "bars": "4 4 4 4 4 4|1", "answers": ["x:1"] * 5})
         self.assertEqual((r["ticket"]["grade"], len(r["answer_errors"])), ("F", 5))
         self.assertIn("off-chord: 6", r["ticket"]["cause"])
+        gr = r["grading"]  # why it graded F: the tolerance and each bar's chord tones
+        self.assertEqual((gr["tolerance_cents"], [b["bar"] for b in gr["bars"]]), (15, [0, 1]))
+        self.assertTrue(gr["bars"][0]["chord_tones"] and all(0 <= c < 1200 for c in gr["bars"][0]["chord_tones"]))
         self.assertEqual(s["events"][-1]["kind"], "over-fire")
         hub.play({**agent("b"), "bars": "1|1"})
         with self.assertRaises(ValueError):
