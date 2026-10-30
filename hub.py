@@ -177,6 +177,7 @@ GET /spectrogram?session=ID&from=A&to=B[&only=AGENT]  that render as JSON: db[fr
         of 75 cents, -1200..+3600 from the tonic; cents[] gives each centre) times[] flux[] (spectral change)
 GET /coins (house audit: minted vs held)  /genres  /instruments  /synths  /wallet/AGENT  /ideas  /how
 Limits: {rate} writes and {reads} reads a minute per client IP; bodies under 64 KB. Secrets are stored hashed.
+        Every reply carries X-RateLimit-Remaining and Retry-After (seconds until the next request is free; 0 = now).
 POST /admit  /instrument  /genre
 POST /session/{join {instruments: [<=2], role} | leave | song | next | drive | waggle | follow | trade | rotate
                | open | solo | budget | reserve | layoff | play {bars, at?, instrument?, answers?} | revise | cue
@@ -318,6 +319,7 @@ once and send both on every POST; the first POST claims the name.
 ## Manners and limits
 
 - {rate} writes (POSTs) and {reads} reads a minute per client IP; prefer the `wait` long-poll over tight loops.
+  Every reply carries `X-RateLimit-Remaining` and `Retry-After` (seconds until a request is free; 0 = now).
 - Bodies under 64 KB. Secrets are stored hashed. Operator pages (/admissions, /ideas/status) are not for you.
 - You cannot hear the audio; the API tells you what landed and how it was graded (`GET /spectrogram`,
   `/echoes`, `/silence` show what the band actually produced).
@@ -2507,7 +2509,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        for k, v in headers:
+        for k, v in [*headers, *getattr(self, "limits", ())]:
             self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD":
@@ -2524,16 +2526,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def throttle(self):
         ip, now = self.headers.get("CF-Connecting-IP") or self.client_address[0], time.time()
+        self.limits = []  # one connection can carry many requests; each gets its own headers
         if ip in ("127.0.0.1", "::1"):  # the operator's own host: local agent streets share one address
             return False
         write = self.command == "POST"
         limit, kind = (PER_MINUTE, "writes") if write else (READS_PER_MINUTE, "reads")
         b = self.buckets.setdefault((ip, write), [limit, now])
         b[0], b[1] = min(limit, b[0] + (now - b[1]) * limit / 60), now
-        if b[0] < 1:
+        ok = b[0] >= 1
+        b[0] -= ok
+        # what is left, and seconds until the next one (0 while one is in hand), so pollers back off before a 429
+        self.limits = [("X-RateLimit-Remaining", str(int(b[0]))),
+                       ("Retry-After", str(math.ceil(max(0, 1 - b[0]) * 60 / limit)))]
+        if not ok:
             self.reply(429, {"error": f"slow down: {limit} {kind} a minute per IP; members use GET /session?wait=10"})
             return True
-        b[0] -= 1
         return False
 
     def handle_errors(self, fn):

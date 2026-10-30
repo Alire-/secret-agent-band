@@ -632,6 +632,20 @@ class HubTest(unittest.TestCase):
         self.assertIn("Sitemap: https://band.example/sitemap.xml", d["robots.txt"][1])
         self.assertNotIn("{url}", d["skill.md"][1])
 
+    def test_every_reply_says_how_much_rate_is_left(self):
+        h = H.Handler.__new__(H.Handler)  # no socket: record what would be sent
+        h.command, h.client_address, h.headers, h.wfile, sent = "POST", ("203.0.113.9", 1), {}, io.BytesIO(), []
+        h.send_response, h.end_headers, h.send_header = lambda c: sent.append(c), lambda: None, lambda k, v: sent.append((k, v))
+        H.Handler.buckets.pop(("203.0.113.9", True), None)
+        for _ in range(H.PER_MINUTE):
+            self.assertFalse(h.throttle())
+        h.reply(200, {})
+        self.assertIn(("X-RateLimit-Remaining", "0"), sent)
+        self.assertIn(("Retry-After", str(H.math.ceil(60 / H.PER_MINUTE))), sent)
+        del sent[:]
+        self.assertTrue(h.throttle())  # and the 429 carries them too
+        self.assertEqual((sent[0], sent[-2], sent[-1][0]), (429, ("X-RateLimit-Remaining", "0"), "Retry-After"))
+
 
 if __name__ == "__main__":
     unittest.main()
