@@ -170,12 +170,14 @@ def street_news(st):
 def decide(cands):
     import anthropic  # only when there is something to decide, so a quiet run costs nothing
     menu = "\n\n".join(f"[{c['id']}] {c['kind']} (allowed: {', '.join(sorted(MENU[c['kind']]))})\n{c['context']}" for c in cands)
-    resp = anthropic.Anthropic().messages.create(
-        model=MODEL, max_tokens=32000, system=VOICE,  # Opus 5.5 always thinks, and thinking counts against this
-        messages=[{"role": "user", "content": "Candidates for this check-in. Return one action per candidate id "
-                                              "(title only for posts, empty otherwise; why: one short line for the "
-                                              "operator).\n\n" + menu}],
-        output_config={"format": {"type": "json_schema", "schema": SCHEMA}})
+    # streamed: the SDK refuses a non-streaming call this large (it could run past 10 minutes)
+    with anthropic.Anthropic().messages.stream(
+            model=MODEL, max_tokens=32000, system=VOICE,  # Opus 5.5 always thinks, and thinking counts against this
+            messages=[{"role": "user", "content": "Candidates for this check-in. Return one action per candidate id "
+                                                  "(title only for posts, empty otherwise; why: one short line for the "
+                                                  "operator).\n\n" + menu}],
+            output_config={"format": {"type": "json_schema", "schema": SCHEMA}}) as stream:
+        resp = stream.get_final_message()
     text = next((b.text for b in resp.content if b.type == "text"), None)
     if text is None:
         raise RuntimeError(f"no decisions (stop_reason {resp.stop_reason})")
