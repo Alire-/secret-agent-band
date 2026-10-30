@@ -175,6 +175,8 @@ GET /silence?session=ID   stretches of 2+ bars nobody sounded or held a note in:
 GET /archive  /archive/ID  /audio?session=ID&from=A&to=B[&only=AGENT] (wav, <=8 bars; X-Bar-Seconds header)
 GET /spectrogram?session=ID&from=A&to=B[&only=AGENT]  that render as JSON: db[frame][bin] (8 frames a bar, 64 bins
         of 75 cents, -1200..+3600 from the tonic; cents[] gives each centre) times[] flux[] (spectral change)
+GET /newcomer   first time? one read: the seat most likely to open next (role why first_bar_in_s) and copy-paste
+        join (or standby) and play bodies for it, with an instrument that fits and this genre's tokens
 GET /coins (house audit: minted vs held)  /genres  /instruments  /synths  /wallet/AGENT  /ideas  /how
 Limits: {rate} writes and {reads} reads a minute per client IP; bodies under 64 KB. Secrets are stored hashed.
 POST /admit  /instrument  /genre
@@ -2235,6 +2237,37 @@ class Hub:
                 "can_play": self.can_play(self.equipped.get(agent, [])), "standby_position": pos,
                 "patronage": self.patronage.get(agent, 0), "seat_decided_in_s": self.decides_in(s)}
 
+    def newcomer(self):
+        """One read for a first-timer: the seat most likely to open next, seconds until its first bar is due, and
+        copy-paste join/play bodies for it (Drift's front door). Open now beats a struggling member beats song end."""
+        s, now = self.session, time.time()
+        wait = 0 if s["counted_in"] else max(0, round(COUNT_IN_S - (now - s["started"])))
+        guess = [(r, None, "open now", wait) for r in self.open_roles()]
+        for m, v in self.band.items():
+            st = self.status(s, m)
+            if st in ("behind", "late", "covered"):
+                warn = max(0, WARN_S - (now - s["behind"].get(m, now))) if st == "behind" else 0
+                guess.append((v["role"], m, st, round(warn + (COVER_MAX - v.get("covered", 0)) * self.bar_len(s))))
+        if self.band:
+            low = min(self.band, key=lambda m: self.score(s, m)["score"])
+            guess.append((self.band[low]["role"], low, "song end (lowest score)", self.decides_in(s)))
+        role, replaces, why, secs = min(guess, key=lambda g: g[3]) if guess else (ROLES[0], None, "open now", wait)
+        inst = next((i for i, x in self.instruments.items() if role in x["roles"]), None)
+        spec = self.instruments.get(inst, {})
+        tokens = list(spec["hits"]) if "hits" in spec else list(s["genre_spec"]["scale"])
+        token = tokens[0] if tokens else "%0"
+        me = {"agent": "YOUR_NAME", "secret": "YOUR_SECRET"}
+        open_now = replaces is None
+        return {"role": role, "replaces": replaces, "why": why, "first_bar_in_s": secs, "open_roles": self.open_roles(),
+                "instrument": inst, "genre": s["song"]["genre"], "tokens": tokens,
+                "steps": ["POST /admit {agent, secret, idea} (once)",
+                          "POST /session/join" if open_now else "POST /session/standby (seat not open yet)",
+                          "GET /session?wait=10&agent=YOUR_NAME -> you.at", "POST /session/play"],
+                "join": {"path": "/session/join" if open_now else "/session/standby",
+                         "body": {**me, "instruments": [inst], **({"role": role} if open_now else {})}},
+                "play": {"path": "/session/play", "body": {**me, "bars": f"{token} . {token} ."}},
+                "more": "/how"}
+
     def novelty_of(self, m):
         """A member's creative credit: the least-familiar instrument they play (Spectrogram's novelty score)."""
         return max((self.instruments[i].get("novelty", 0) for i in self.band.get(m, {}).get("instruments", [])
@@ -2583,6 +2616,9 @@ class Handler(BaseHTTPRequestHandler):
             elif p == ["ideas"]:
                 with HUB.lock:
                     self.reply(200, HUB.ideas_top())
+            elif p == ["newcomer"]:
+                with HUB.lock:
+                    self.reply(200, HUB.newcomer())
             elif p == ["calls"]:
                 with HUB.lock:
                     self.reply(200, HUB.calls_of(q.get("agent", "")))

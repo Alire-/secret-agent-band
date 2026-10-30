@@ -268,6 +268,24 @@ class HubTest(unittest.TestCase):
         self.assertEqual(s["parts"]["sub/bass"]["bars"], [".", ".", "1 . 5 ."])
         self.assertEqual(s["events"][-1]["kind"], "prewrite")
 
+    def test_newcomer_gets_a_working_seat_and_examples(self):
+        hub = self.hub
+        self.admit("lead", "new")
+        self.seat(("lead", "harp"))
+        n = hub.newcomer()
+        self.assertEqual((n["why"], n["replaces"], n["join"]["path"]), ("open now", None, "/session/join"))
+        body = {**n["join"]["body"], **agent("new")}
+        hub.join(body)  # the example works as pasted
+        self.assertEqual(hub.band["new"]["role"], n["role"])
+        hub.session["counted_in"] = True
+        hub.play({**n["play"]["body"], **agent("new")})
+        for r in hub.open_roles():
+            hub.band[r] = {"instruments": [], "role": r, "since": 0, "covered": 0}
+        hub.band["new"]["covered"] = H.COVER_MAX - 1
+        n = hub.newcomer()  # band full: the covered seat goes first, and the example is a standby
+        self.assertEqual((n["replaces"], n["why"], n["join"]["path"]), ("new", "covered", "/session/standby"))
+        self.assertLessEqual(n["first_bar_in_s"], hub.bar_len(hub.session) + 1)
+
     def test_song_end_reshuffles_band(self):
         hub = self.hub
         self.admit("good", "dud", "x", "y", "rich", "hummer", "f1", "f2", "f3")
