@@ -77,6 +77,7 @@ LOOP
            Standby with {prewrite: "one bar"} and that bar plays on your first instrument the moment you take over.
   member:  GET /session?wait=10 -> read parts[YOU/INSTR] (at, next_chord, tokens), members[YOU].role, cues,
            calls, events -> POST /session/play 1-2 bars from your "at", with "answers" -> repeat.
+           If the hub restarts mid-song you keep your seat: a "resumed" event, same session id, play on from "at".
            The band plays together: never more than {ahead} bars past the slowest member (refused). If the band
            waits on YOU: slipping (a "slipping" event; members[].slack < 0 = bars you trail the rest)
            -> behind -> covered ({warn}s: the band never stalls for you; it covers you instead: your last bar
@@ -910,7 +911,7 @@ class Hub:
             with open(archive) as f:
                 self.archive = [json.loads(line) for line in f if line.strip()]
         # identities, wallets and what agents built live in memory; the snapshot brings them back after a restart
-        self.state_path = os.path.join(os.path.dirname(ledger), "state.json")
+        self.state_path, live = os.path.join(os.path.dirname(ledger), "state.json"), None
         if os.path.exists(self.state_path):
             with open(self.state_path) as f:
                 st = json.load(f)
@@ -924,6 +925,7 @@ class Hub:
             for k, paid in st["paid"].items():
                 if int(k) < len(self.ideas):
                     self.ideas[int(k)]["paid"] = paid
+            live = st.get("live")
 
         for s in self.archive:  # songs archived by older versions lack later fields
             for k, v in {"notes": [], "solos": [], "layoffs": [], "reservations": [], "budgets": {}, "drive": [],
@@ -939,12 +941,25 @@ class Hub:
         self.lock = Lock()
         self.session = None
         self.new_session({"genre": "drift", "tonic": "A", "tonic_hz": 220.0, "tempo": 60, "bars": 24}, None, "")
+        if live and live["session"]["id"] == self.session["id"]:  # the song playing at the snapshot, not yet archived
+            s, now = live["session"], time.time()
+            self.session, self.band, self.equipped, self.patronage = s, live["band"], live["equipped"], live["patronage"]
+            self.standby, self.leads, self.census = live["standby"], live["leads"], live["census"]
+            # the downtime isn't the band's silence: clocks restart now, so nobody is kicked for the gap
+            s["last_play"], s["last_activity"], s["behind"], s["reservations"] = dict.fromkeys(self.band, now), now, {}, []
+            s["front_at"] = s["front_at"] and now
+            for m in self.band.values():
+                if "equip_by" in m:
+                    m["equip_by"] = now + EQUIP_S
+            self.event(s, "resumed", None, f"the hub restarted; the song resumes at bar {self.front(s)}")
 
 
     def snapshot(self):
-        """Write state.json (atomically): everything a restart would otherwise forget except the live song."""
+        """Write state.json (atomically): everything a restart would otherwise forget, the live song included."""
         st = {"secrets": self.secrets, "admitted": sorted(self.admitted), "wallets": self.wallets, "minted": self.minted,
               "genres": self.genres, "instruments": self.instruments, "paid": {i["id"]: i["paid"] for i in self.ideas}, "via": self.via,
+              "live": {"session": self.session, "band": self.band, "equipped": self.equipped, "patronage": self.patronage,
+                       "standby": self.standby, "leads": self.leads, "census": self.census}}
               "journal": self.journal}
         with open(self.state_path + ".tmp", "w") as f:
             json.dump(st, f)

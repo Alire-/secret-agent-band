@@ -541,6 +541,24 @@ class HubTest(unittest.TestCase):
         self.assertIn("glassbell", again.instruments)
         self.assertEqual(again.ideas[0]["paid"], hub.ideas[0]["paid"])
 
+    def test_snapshot_resumes_the_live_song(self):
+        hub = self.hub
+        self.admit("Keeper", "Plumbline")
+        self.seat(("Keeper", "harp"), ("Plumbline", "bass"))
+        hub.play({**agent("Keeper"), "bars": "1 3 5 . | 5 3 1 ."})
+        hub.play({**agent("Plumbline"), "bars": "1 . 5 . | 1 . 5 ."})
+        hub.snapshot()
+        again = Hub(**self.paths)
+        s = again.session
+        self.assertEqual((s["id"], again.front(s)), (hub.session["id"], 2))
+        self.assertEqual(s["parts"]["Keeper/harp"]["bars"], ["1 3 5 .", "5 3 1 ."])
+        self.assertEqual(set(again.band), {"Keeper", "Plumbline"})
+        self.assertEqual(s["events"][-1]["kind"], "resumed")
+        again.tick()  # the restart's gap isn't silence: nobody is kicked
+        self.assertEqual(set(again.band), {"Keeper", "Plumbline"})
+        again.play({**agent("Keeper"), "bars": "1 . . ."})
+        self.assertEqual(again.member_at(s, "Keeper"), 3)
+
     def test_sonic_pi_synth_instrument(self):
         hub = self.hub
         self.admit("Patch")
