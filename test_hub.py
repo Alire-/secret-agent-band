@@ -148,6 +148,9 @@ class HubTest(unittest.TestCase):
         self.assertEqual([(r["kind"], r["copy"]) for r in e["answers"]], [("cue", None), ("bar", False), ("bar", True)])
         self.assertEqual((e["answers"][1]["rhythm"], e["answers"][2]["shared_cents"]), (1.0, [0]))
         self.assertEqual(hub.score(s, "a")["answered_by_others"], 2)  # the copy earns nothing
+        lines = {(l["agent"], l["bar"]): l for l in hub.transcript(s)}  # footnotes: cited copies vs uncited ones
+        self.assertEqual(lines[("c", 2)]["cites"], [{"ref": "bar:a@1", "shared_cents": [0], "copy": True}])
+        self.assertEqual((lines[("c", 2)]["uncited_copy"], lines[("c", 3)]["uncited_copy"]), (None, "a@0"))
         hub.cue({**agent("a"), "cue": "up"})
         self.assertEqual(s["dyn"][-1], [2, 14, 1.6])
         hub.cue({**agent("a"), "cue": "from the top", "at": 9})
@@ -385,6 +388,9 @@ class HubTest(unittest.TestCase):
         r = hub.play({**agent("lead"), "bars": "4 4 4 4 4 4|1", "answers": ["x:1"] * 5})
         self.assertEqual((r["ticket"]["grade"], len(r["answer_errors"])), ("F", 5))
         self.assertIn("off-chord: 6", r["ticket"]["cause"])
+        gr = r["grading"]  # why it graded F: the tolerance and each bar's chord tones
+        self.assertEqual((gr["tolerance_cents"], [b["bar"] for b in gr["bars"]]), (15, [0, 1]))
+        self.assertTrue(gr["bars"][0]["chord_tones"] and all(0 <= c < 1200 for c in gr["bars"][0]["chord_tones"]))
         self.assertEqual(s["events"][-1]["kind"], "over-fire")
         hub.play({**agent("b"), "bars": "1|1"})
         with self.assertRaises(ValueError):
@@ -524,6 +530,23 @@ class HubTest(unittest.TestCase):
         self.assertLessEqual(abs(peak[-3] - 150), 75)
         self.assertIn(max(range(len(g["flux"])), key=g["flux"].__getitem__), (H.SPEC_PER_BAR - 1, H.SPEC_PER_BAR))
 
+    def test_ledger_balances_every_coin_movement(self):
+        hub = self.hub
+        self.admit("Ink", "Fan", "Quill")
+        self.seat(("Ink", "harp"))
+        hub.vote_idea({**agent("Fan"), "id": 0})
+        hub.tip({**agent("Fan"), "amount": 7, "to": "Ink"})
+        hub.tip({**agent("Fan"), "amount": 3, "to": "hall"})
+        led = hub.ledger_of("Ink")
+        self.assertEqual([e["kind"] for e in led["entries"]], ["idea payout", "house bonus", "vote bonus", "tip"])
+        self.assertEqual([e["balance"] for e in led["entries"]], [20, 100, 110, 117])
+        self.assertEqual(led["balance"], hub.wallets["Ink"])
+        self.assertEqual(hub.ledger_of("Fan")["entries"][-1], {**hub.journal[-1], "balance": 90})
+        c = hub.coins()
+        self.assertEqual((c["debits"], c["credits"], c["balanced"], c["diff"]), (c["credits"], c["debits"], True, 0))
+        hub.snapshot()
+        self.assertTrue(Hub(**self.paths).coins()["balanced"])
+
     def test_snapshot_restores_identities_wallets_and_builds(self):
         hub = self.hub
         self.admit("Keeper")
@@ -538,6 +561,24 @@ class HubTest(unittest.TestCase):
         self.assertEqual(again.coins()["diff"], 0)
         self.assertIn("glassbell", again.instruments)
         self.assertEqual(again.ideas[0]["paid"], hub.ideas[0]["paid"])
+
+    def test_snapshot_resumes_the_live_song(self):
+        hub = self.hub
+        self.admit("Keeper", "Plumbline")
+        self.seat(("Keeper", "harp"), ("Plumbline", "bass"))
+        hub.play({**agent("Keeper"), "bars": "1 3 5 . | 5 3 1 ."})
+        hub.play({**agent("Plumbline"), "bars": "1 . 5 . | 1 . 5 ."})
+        hub.snapshot()
+        again = Hub(**self.paths)
+        s = again.session
+        self.assertEqual((s["id"], again.front(s)), (hub.session["id"], 2))
+        self.assertEqual(s["parts"]["Keeper/harp"]["bars"], ["1 3 5 .", "5 3 1 ."])
+        self.assertEqual(set(again.band), {"Keeper", "Plumbline"})
+        self.assertEqual(s["events"][-1]["kind"], "resumed")
+        again.tick()  # the restart's gap isn't silence: nobody is kicked
+        self.assertEqual(set(again.band), {"Keeper", "Plumbline"})
+        again.play({**agent("Keeper"), "bars": "1 . . ."})
+        self.assertEqual(again.member_at(s, "Keeper"), 3)
 
     def test_sonic_pi_synth_instrument(self):
         hub = self.hub
