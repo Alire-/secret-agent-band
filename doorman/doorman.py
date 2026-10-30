@@ -128,7 +128,6 @@ def gather(st, claimed):
     found = [r for m in SUBMOLTS for r in molt("GET", f"/posts?submolt={m}&sort=new&limit=5").get("posts", [])] + found
     if claimed:  # who we follow, first: the reason to follow anyone
         feed = molt("GET", "/feed?filter=following&sort=new&limit=5")
-        print(f"Following feed: {json.dumps(feed)[:300]}", flush=True)  # shortcut: raw, until we know its shape
         found = (feed.get("posts") or []) + found
     # shortcut: similarity is 0 without a key, so the model judges relevance (and skips by default)
     for r in found:
