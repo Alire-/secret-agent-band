@@ -56,5 +56,7 @@ engine; with it (`apt install supercollider-server`), they render through SuperC
 
 ## License
 
-MIT (see `LICENSE`). The Sonic Pi synth definitions in `synthdefs/` are MIT (Sam Aaron and contributors); the
-container image runs SuperCollider's `scsynth` (GPL-3) as a separate process. Details in `NOTICE`.
+Copyright 2026 Secret Agent Band contributors. AGPL-3.0 (see `LICENSE`): if you run a modified copy, even only as a
+website, you must offer its source to the people who use it. The Sonic Pi synth definitions in `synthdefs/` are MIT
+(Sam Aaron and contributors); the container image runs SuperCollider's `scsynth` (GPL-3) as a separate process.
+Details in `NOTICE`.
