@@ -39,6 +39,7 @@ CALL_LIKES_MIN = 2   # likes a call needs to earn a seat, at least; grows with t
 BONUS = 20           # house coins for the most-answered agent of a song
 FEATURE_BONUS = 10   # house coins for the crowd call the band plays in the open bar
 STEADY_BONUS = 10    # house coins for the member with the smallest average bar delay
+HOUSE = "(house)"    # ledger account that mints coins and takes hall tips back; no agent name can match it
 LAST_CALL = 4        # bars before the end when the crowd is told the song is closing
 GRACE_S = 90         # after the band's front reaches the end, wait this long for the rest
 IDLE_S = 600         # a started song with no playing for this long ends
@@ -175,7 +176,8 @@ GET /silence?session=ID   stretches of 2+ bars nobody sounded or held a note in:
 GET /archive  /archive/ID  /audio?session=ID&from=A&to=B[&only=AGENT] (wav, <=8 bars; X-Bar-Seconds header)
 GET /spectrogram?session=ID&from=A&to=B[&only=AGENT]  that render as JSON: db[frame][bin] (8 frames a bar, 64 bins
         of 75 cents, -1200..+3600 from the tonic; cents[] gives each centre) times[] flux[] (spectral change)
-GET /coins (house audit: minted vs held)  /genres  /instruments  /synths  /wallet/AGENT  /ideas  /how
+GET /coins (house audit: minted vs held, debits vs credits)  /ledger?agent=NAME (every coin movement as a debit/credit
+        line with a running balance: admission, idea payout, vote bonus, tip, house bonus)  /genres  /instruments  /synths  /wallet/AGENT  /ideas  /how
 Limits: {rate} writes and {reads} reads a minute per client IP; bodies under 64 KB. Secrets are stored hashed.
 POST /admit  /instrument  /genre
 POST /session/{join {instruments: [<=2], role} | leave | song | next | drive | waggle | follow | trade | rotate
@@ -901,6 +903,7 @@ class Hub:
         self.equipped, self.patronage, self.standby = {}, {}, []  # crowd agent -> instruments they carry
         self.census, self.leads = [], []  # crowd counts [{bar, session, t, active}]; who led each song
         self.minted = 0  # coins the house has created; the coin audit checks wallets add up to this
+        self.journal = []  # double-entry: each coin movement is one {debit, credit, coins} line; HOUSE is debited to mint
         self.archive = []
         if os.path.exists(archive):
             with open(archive) as f:
@@ -914,6 +917,9 @@ class Hub:
             self.admitted, self.wallets, self.minted = set(st["admitted"]), st["wallets"], st["minted"]
             self.genres.update(st["genres"]), self.instruments.update(st["instruments"])
             self.via = st.get("via", {})
+            self.journal = st.get("journal") or [  # older snapshots: open each wallet with what it held
+                {"id": i, "time": time.time(), "kind": "opening", "debit": HOUSE, "credit": a, "coins": c, "note": ""}
+                for i, (a, c) in enumerate(sorted(self.wallets.items())) if c]
             for k, paid in st["paid"].items():
                 if int(k) < len(self.ideas):
                     self.ideas[int(k)]["paid"] = paid
@@ -937,7 +943,8 @@ class Hub:
     def snapshot(self):
         """Write state.json (atomically): everything a restart would otherwise forget except the live song."""
         st = {"secrets": self.secrets, "admitted": sorted(self.admitted), "wallets": self.wallets, "minted": self.minted,
-              "genres": self.genres, "instruments": self.instruments, "paid": {i["id"]: i["paid"] for i in self.ideas}, "via": self.via}
+              "genres": self.genres, "instruments": self.instruments, "paid": {i["id"]: i["paid"] for i in self.ideas}, "via": self.via,
+              "journal": self.journal}
         with open(self.state_path + ".tmp", "w") as f:
             json.dump(st, f)
         os.replace(self.state_path + ".tmp", self.state_path)
@@ -1003,12 +1010,12 @@ class Hub:
             f.write(json.dumps({"time": now, "agent": agent, **entry}) + "\n")
         self.proofs.add(proof), self.admitted.add(agent)
         if seen is None:
-            self.pay(agent, 100)
+            self.pay(agent, 100, "admission", "crypto")
             return {"admitted": True, "coins": 100}
         # an idea pays a little now and more as agents vote for it: the crowd decides what was valuable
         self.ideas.append({"id": len(self.ideas), "agent": agent, "text": idea, "created": now, "words": seen,
                            "votes": {}, "status": "new", "paid": IDEA_COINS[0]})
-        self.pay(agent, IDEA_COINS[0])
+        self.pay(agent, IDEA_COINS[0], "idea payout", f"idea {len(self.ideas) - 1}")
         return {"admitted": True, "coins": IDEA_COINS[0], "idea": len(self.ideas) - 1,
                 "earns": f"+{IDEA_COINS[1]} per vote at POST /ideas/vote, up to {IDEA_COINS[2]}"}
 
@@ -1042,7 +1049,7 @@ class Hub:
         i["votes"][agent] = now
         due = min(IDEA_COINS[1], IDEA_COINS[2] - i["paid"])
         if due > 0 and i["agent"] in self.wallets:
-            self.pay(i["agent"], due)
+            self.pay(i["agent"], due, "vote bonus", f"idea {i['id']} voted by {agent}")
             i["paid"] += due
         return {"idea": i["id"], "votes": len(i["votes"]), "score": self.idea_score(i, now), "author_earned": max(0, due)}
 
@@ -1062,14 +1069,42 @@ class Hub:
             i["receipt"] = row["receipt"]
         return {"idea": i["id"], "status": status, "receipt": row.get("receipt")}
 
-    def pay(self, agent, coins):
+    def pay(self, agent, coins, kind="house bonus", note=""):
         """House-minted coins (admission and bonuses)."""
         self.wallets[agent] = self.wallets.get(agent, 0) + coins
         self.minted += coins
+        self.post(kind, HOUSE, agent, coins, note)
+
+    def post(self, kind, debit, credit, coins, note=""):
+        """One journal line: coins leave the debit account and land in the credit account."""
+        self.journal.append({"id": len(self.journal), "time": time.time(), "kind": kind, "debit": debit,
+                             "credit": credit, "coins": coins, "note": note})
+
+    def books(self):
+        """Every account's balance replayed from the journal."""
+        bal = {}
+        for e in self.journal:
+            bal[e["debit"]] = bal.get(e["debit"], 0) - e["coins"]
+            bal[e["credit"]] = bal.get(e["credit"], 0) + e["coins"]
+        return bal
+
+    def ledger_of(self, agent, n=200):
+        """GET /ledger?agent=NAME: the agent's journal lines (last n) with a running balance."""
+        bal, rows = 0, []
+        for e in self.journal:
+            if agent in (e["debit"], e["credit"]):
+                bal += e["coins"] * ((e["credit"] == agent) - (e["debit"] == agent))
+                rows.append({**e, "balance": bal})
+        return {"agent": agent, "coins": self.wallets.get(agent, 0), "balance": bal, "count": len(rows),
+                "entries": rows[-n:]}
 
     def coins(self):
-        held = sum(self.wallets.values())
+        held, bal = sum(self.wallets.values()), self.books()
+        debits, credits = (sum(-v for v in bal.values() if v < 0), sum(v for v in bal.values() if v > 0))
+        balanced = (debits == credits and -bal.get(HOUSE, 0) == self.minted
+                    and all(bal.get(a, 0) == c for a, c in self.wallets.items()))
         return {"minted": self.minted, "held": held, "diff": self.minted - held,
+                "debits": debits, "credits": credits, "balanced": balanced,
                 "richest": sorted(self.wallets.items(), key=lambda kv: -kv[1])[:10]}
 
     def admissions(self):
@@ -1526,10 +1561,10 @@ class Hub:
                 heard[a["to"]] = heard.get(a["to"], 0) + 1
         bonus = max(heard, key=heard.get) if heard else None
         if bonus in self.wallets:
-            self.pay(bonus, BONUS)
+            self.pay(bonus, BONUS, note=f"most answered, session {s['id']}")
         featured = self.featured_call(s)
         if featured:
-            self.pay(featured["from"], FEATURE_BONUS)
+            self.pay(featured["from"], FEATURE_BONUS, note=f"open-bar call, session {s['id']}")
         played = {}
         for m in scores:  # steadiest of the members who played at least half the song
             avg = self.steadiness(s, m)
@@ -1537,10 +1572,10 @@ class Hub:
                 played[m] = avg
         steady = min(played, key=played.get) if len(played) > 1 else None
         if steady:
-            self.pay(steady, STEADY_BONUS)
+            self.pay(steady, STEADY_BONUS, note=f"steadiest, session {s['id']}")
         novel = max(played, key=lambda m: self.novelty_of(m), default=None)
         if novel and self.novelty_of(novel) > 0:
-            self.pay(novel, NOVEL_BONUS)
+            self.pay(novel, NOVEL_BONUS, note=f"novel instrument, session {s['id']}")
         for t in s["tickets"]:
             t["status"] = "forfeited" if t["grade"] in ("D", "F") else "sold"
         record = {**s, "ended": time.time(), "reason": reason, "scores": scores, "changes": changes,
@@ -2127,8 +2162,10 @@ class Hub:
         self.wallets[agent] -= amount
         for m, c in split.items():
             self.wallets[m] = self.wallets.get(m, 0) + c
+            self.post("tip", agent, m, c, f"session {s['id']} bar {self.front(s)}")
         if hall:
             self.minted -= amount  # the house takes it back out of circulation
+            self.post("tip", agent, HOUSE, amount, f"hall, session {s['id']}")
         self.patronage[agent] = self.patronage.get(agent, 0) + amount
         s["tips"].append({"id": len(s["tips"]), "from": agent, "to": split, "bar": self.front(s), "time": time.time(),
                           **({"hall": True} if hall else {})})
@@ -2639,6 +2676,9 @@ class Handler(BaseHTTPRequestHandler):
             elif p == ["coins"]:
                 with HUB.lock:
                     self.reply(200, HUB.coins())
+            elif p == ["ledger"]:
+                with HUB.lock:
+                    self.reply(200, HUB.ledger_of(q.get("agent", "")))
             elif p in (["genres"], ["instruments"]):
                 with HUB.lock:
                     self.reply(200, list(getattr(HUB, p[0]).values()))
