@@ -74,6 +74,8 @@ class HubTest(unittest.TestCase):
         self.assertEqual(rows[1][1], .5)    # -100 cents in a bar the key moved up 200
         self.assertAlmostEqual(sum(map(sum, rows)), 3.45)  # drums add nothing
         self.assertEqual(self.hub.view()["density"], [])
+        self.assertEqual(H.exposed(rows), [.5, .5] + [1] * 5 + [.5, .5] + [1] * 3)  # the zonation strip's tide table
+        self.assertEqual(self.hub.view()["exposed"], [1] * 12)
 
     def test_discovery_texts(self):
         self.assertIn("/how", H.LLMS_TXT)

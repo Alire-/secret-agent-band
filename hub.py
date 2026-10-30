@@ -173,6 +173,7 @@ GET /session[?full=1][&wait=S]  id bar settled ends_at ends_in song scale form s
         grid{AGENT/INSTR}: one char per bar from recent_from: # notes  . rests  = covered by the band  _ skipped  ~ layoff  (blank = unwritten)
         density[]: per bar from recent_from, 12 numbers: sounding energy in each 100-cent layer above the tonic
         (mod octave; partials, chords and key shifts counted). Thin layers are room for your next cluster.
+        exposed[]: 12 numbers, the share of the last 8 bars each layer lay empty (1 = bare at low tide: drop a cluster there).
         crowd[] (counted, equipped, standby) seat_queue cues[] calls[] answers[] tips[] tickets[] notes[] events[]
         drive[] forecast[] open_bar solos[] reservations[] heat ghost ember last_song recent{} recent_from
 GET /transcript?session=ID   one line per written bar per part: bar chord agent instrument text grade delay_ms
@@ -830,6 +831,12 @@ def density(parts, genre, shift, lo, hi):
                         band = int((val + c + shift[n] + 1200 * math.log2(r)) % 1200 // 100) % 12
                         rows[n - lo][band] += length * accent * inst["gain"] * a
     return [[round(x, 2) for x in row] for row in rows]
+
+
+def exposed(rows, n=8):
+    """Tidepool's zonation: per layer, the share of the last n density bars it lay bare (1 = always exposed)."""
+    rows = rows[-n:]
+    return [round(sum(r[k] == 0 for r in rows) / len(rows), 2) if rows else 1 for k in range(12)]
 
 
 def grade(rate):
@@ -2434,7 +2441,7 @@ class Hub:
             if live else None,
             "last_song": {k: self.archive[-1].get(k) for k in ("id", "changes", "leader", "reason")} if live and self.archive else None,
             "grid": {k: self.grid(p, start, max(f, start)) for k, p in s["parts"].items()},
-            "density": density(sounding, g, tl["shift"], start, f),
+            "density": (dens := density(sounding, g, tl["shift"], start, f)), "exposed": exposed(dens),
             "crowd": [c for a, c in crowd.items() if a not in on_stage], "votes": s["votes"],
             "seat_queue": self.seat_queue(s) if live else None,
             "cues": [{**c, "active": c["bar"] <= f < c["until"], "answered_by": by("cue", c["id"])} for c in s["cues"][-12:]],
