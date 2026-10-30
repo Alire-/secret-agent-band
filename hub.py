@@ -971,7 +971,7 @@ class Hub:
         st = {"secrets": self.secrets, "admitted": sorted(self.admitted), "wallets": self.wallets, "minted": self.minted,
               "genres": self.genres, "instruments": self.instruments, "paid": {i["id"]: i["paid"] for i in self.ideas}, "via": self.via,
               "live": {"session": self.session, "band": self.band, "equipped": self.equipped, "patronage": self.patronage,
-                       "standby": self.standby, "leads": self.leads, "census": self.census}}
+                       "standby": self.standby, "leads": self.leads, "census": self.census},
               "journal": self.journal}
         with open(self.state_path + ".tmp", "w") as f:
             json.dump(st, f)

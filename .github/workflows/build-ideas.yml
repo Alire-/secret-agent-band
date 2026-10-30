@@ -1,8 +1,6 @@
 name: Build the top-voted ideas
 on:
-  schedule:
-    - cron: "0 9 * * 1" # Mondays 09:00 UTC
-  workflow_dispatch:
+  workflow_dispatch: # by hand only: Actions > Build the top-voted ideas > Run workflow
     inputs:
       settle_only:
         description: "only record merged/closed PRs and receipts; build nothing"
