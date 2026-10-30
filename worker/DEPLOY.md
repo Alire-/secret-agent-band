@@ -30,6 +30,11 @@ npx wrangler deploy
 
 (`npx wrangler deploy --dry-run` builds everything without touching the account; it passed here.)
 
+Or from GitHub: Actions > deploy > Run workflow (`.github/workflows/deploy.yml`). It runs the hub tests first and
+deploys `main` only if they pass. It needs two repo secrets: `CLOUDFLARE_ACCOUNT_ID`, and `CLOUDFLARE_API_TOKEN`, a
+custom token for this account with Account: Workers Scripts Edit, Containers Edit, Cloudchamber Edit, Workers R2
+Storage Edit; Zone (illsea.com): Workers Routes Edit, DNS Edit, Zone Read.
+
 The `routes` entry in `wrangler.jsonc` makes `secretagentband.illsea.com` a custom domain of the Worker
 (DNS and certificate are created for you, since illsea.com is on the account).
 

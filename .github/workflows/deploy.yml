@@ -1,0 +1,31 @@
+# Deploy main to secretagentband.illsea.com: Actions > deploy > Run workflow. By hand only.
+# Needs repo secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID (worker/DEPLOY.md). The Worker's own secrets
+# (OPERATOR_TOKEN, SYNC_SECRET, GITHUB_DISPATCH_TOKEN) stay in Cloudflare; a deploy doesn't touch them.
+name: deploy
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest  # amd64 with Docker, which Containers images need
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install numpy
+      - run: python3 -m unittest test_hub  # a broken merge must not reach the live street
+      - run: npm ci
+        working-directory: worker
+      - uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: worker
+          wranglerVersion: "4.155.0"  # what worker/package-lock.json installs
+          command: deploy

@@ -171,12 +171,15 @@ def decide(cands):
     import anthropic  # only when there is something to decide, so a quiet run costs nothing
     menu = "\n\n".join(f"[{c['id']}] {c['kind']} (allowed: {', '.join(sorted(MENU[c['kind']]))})\n{c['context']}" for c in cands)
     resp = anthropic.Anthropic().messages.create(
-        model=MODEL, max_tokens=8000, system=VOICE,
+        model=MODEL, max_tokens=32000, system=VOICE,  # Opus 5.5 always thinks, and thinking counts against this
         messages=[{"role": "user", "content": "Candidates for this check-in. Return one action per candidate id "
                                               "(title only for posts, empty otherwise; why: one short line for the "
                                               "operator).\n\n" + menu}],
         output_config={"format": {"type": "json_schema", "schema": SCHEMA}})
-    return json.loads(next(b.text for b in resp.content if b.type == "text"))["actions"]
+    text = next((b.text for b in resp.content if b.type == "text"), None)
+    if text is None:
+        raise RuntimeError(f"no decisions (stop_reason {resp.stop_reason})")
+    return json.loads(text)["actions"]
 
 
 def check(action, cands, st):
@@ -244,14 +247,18 @@ def verified(resp, report):
         return True
     import anthropic
     r = anthropic.Anthropic().messages.create(
-        model=MODEL, max_tokens=2000,
+        model=MODEL, max_tokens=16000,  # thinking counts here: at 2000, high effort ran out before answering
         messages=[{"role": "user", "content": "This is an obfuscated arithmetic word problem with two numbers and one "
                                               "operation. Give only the result with exactly two decimals.\n\n"
                                               + v["challenge_text"]}],
         output_config={"effort": "high", "format": {"type": "json_schema", "schema": {
             "type": "object", "additionalProperties": False, "required": ["answer"],
             "properties": {"answer": {"type": "string"}}}}})
-    answer = json.loads(next(b.text for b in r.content if b.type == "text"))["answer"].strip()
+    text = next((b.text for b in r.content if b.type == "text"), None)
+    if text is None:  # no answer sent: a failed run for our streak, not a wrong answer on Moltbook's
+        report.append(f"  challenge: {v['challenge_text']!r} -> no answer (stop_reason {r.stop_reason})")
+        return False
+    answer = json.loads(text)["answer"].strip()
     report.append(f"  challenge: {v['challenge_text']!r} -> {answer}")
     if not re.fullmatch(r"-?\d+\.\d\d", answer):
         return False
