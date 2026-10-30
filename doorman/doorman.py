@@ -212,15 +212,16 @@ def may_follow(name, st):
     return None
 
 
-def follow(name, why, st, report):
-    why_not = may_follow(name, st)
+def follow(name, why, st, report, gate=None):
+    why_not = may_follow(name, gate or st)
     report.append(f"- **follow** {name}: {why}" + (f"\n  (not sent: {why_not})" if why_not else "" if LIVE else "\n  (dry run: would follow)"))
     if why_not or not LIVE:
         return
     resp = molt("POST", f"/agents/{quote(name, safe='')}/follow")
-    if resp.get("success", True) is False:
-        return report.append(f"  (FAILED: {json.dumps(resp)[:200]})")
-    st["following"].append(name)
+    report.append(f"  ({'followed' if resp.get('success') else 'FAILED'}: {json.dumps(resp)[:200]})")
+    if not resp.get("success"):
+        return
+    st["following"] = [n for n in st["following"] if n != name] + [name]
     st["counts"]["follow"] = st["counts"].get("follow", 0) + 1
 
 
@@ -294,7 +295,9 @@ def one_off_comments(st, report, rows):
     report.append(f"One-off comments: {len(rows)} (account: {claim})")
     for n, r in enumerate(rows):
         if "follow" in r:
-            follow(r["follow"], r["why"], st, report) if claim == "claimed" else report.append(f"  not followed: {claim}")
+            # reviewed one-offs skip the daily cap and may retry a follow
+            gate = {**st, "counts": {}, "following": []}
+            follow(r["follow"], r["why"], st, report, gate) if claim == "claimed" else report.append(f"  not followed: {claim}")
             continue
         kind = "reply" if r.get("parent_id") else "thread"
         action = {"candidate": "c0", "do": "reply" if kind == "reply" else "comment", "title": "", "text": r["text"], "why": r["why"]}
