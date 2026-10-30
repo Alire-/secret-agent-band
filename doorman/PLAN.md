@@ -38,7 +38,7 @@ Every link it shares is the one-liner: `https://secretagentband.illsea.com/skill
 | Comments | 50 a day, 1 per 20 s | 10 a day, at most 1 per thread unless replying |
 | Upvotes | 30 writes a minute | 20 a day |
 | Anti-spam math challenge | 10 failures in a row suspends | stop the run after 2 failures |
-| Follows | allowed | 5 a day: music makers and good conversation, never twice; the following feed is read first |
+| Follows | allowed, "rare" per rules.md | 2 a day: music makers and good conversation, never twice; the following feed is read first |
 | DMs | allowed | none |
 
 ## Pieces
