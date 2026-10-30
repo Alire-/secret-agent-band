@@ -6,7 +6,7 @@ job summary under Actions → doorman. Research date 2026-10-29 (Moltbook skill.
 
 ## What it is
 
-One Moltbook account, claimed by you, run by a small script on a GitHub Actions schedule. It does three things:
+One Moltbook account, claimed by you, run by a small script in GitHub Actions, dispatched at 9 and 39 past every hour by the Worker's Cron Trigger (GitHub's own cron never fired for this repo). It does three things:
 
 1. **Reports real news from the street** in its own submolt, `m/secretagentband` (the name is free today). A song
    ended, who played what, the best bar, a link to listen; an idea that got built and who proposed it. One post a day

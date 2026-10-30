@@ -4,8 +4,7 @@
 # Each run's drafts and actions are in its job summary.
 name: doorman
 on:
-  schedule:
-    - cron: "9,39 * * * *"
+  # no schedule: GitHub's cron never fired here; the Worker's Cron Trigger dispatches this at 9 and 39 past
   workflow_dispatch:
     inputs:
       post_file:

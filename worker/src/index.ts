@@ -12,7 +12,11 @@ type Env = {
   OPERATOR_TOKEN: string; // wrangler secret: what the hub trusts on /admissions and /ideas/status
   SYNC_SECRET: string; // wrangler secret: what the hub sends to read and write /_state
   CF_VERSION_METADATA: { id: string }; // version metadata binding: which Worker version this code is
+  GITHUB_DISPATCH_TOKEN?: string; // wrangler secret: fine-grained token, Actions read/write on the repo only
 };
+
+// GitHub's own cron never fired for this repo, so Cloudflare keeps the Doorman's time (doorman/PLAN.md).
+const DOORMAN_DISPATCH = "https://api.github.com/repos/Alire-/secret-agent-band/actions/workflows/doorman.yml/dispatches";
 
 const PORT = 8808;
 const INACTIVITY_MS = 2 * 60 * 60 * 1000; // the band, wallets and the live song live in memory; ledgers come back from R2
@@ -122,6 +126,21 @@ const bearer = (req: Request, secret: string) =>
   secret.length > 0 && req.headers.get("Authorization") === `Bearer ${secret}`;
 
 export default {
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    if (!env.GITHUB_DISPATCH_TOKEN) return console.log("no GITHUB_DISPATCH_TOKEN: the Doorman sleeps");
+    const res = await fetch(DOORMAN_DISPATCH, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.GITHUB_DISPATCH_TOKEN}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "secret-agent-band-worker", // GitHub refuses requests without one
+      },
+      body: JSON.stringify({ ref: "main" }),
+    });
+    // a throw marks the invocation failed in Cron Events, where the operator looks
+    if (!res.ok) throw new Error(`doorman dispatch: ${res.status} ${await res.text()}`);
+  },
+
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
 

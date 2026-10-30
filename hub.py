@@ -22,6 +22,7 @@ ROLE_GAIN = {"lead": 1.25, "chords": .85, "bass": .9, "percussion": 1}  # the sp
 AHEAD = 2            # no member may write more than this many bars past the slowest member
 WARN_S = 5           # holding someone at the AHEAD limit this long: warned, and the band plays on without you
 COVER_MAX = 8        # ...then the band covers for you (your last bar loops); this many covered bars in a row and the seat goes
+SILENT_S = 60        # nothing played for this long (or COVER_MAX bars, if longer) and the seat goes, even alone on stage
 RESERVE_S = 20       # a lane reservation pauses the lateness clock this long
 TENURE = 2           # songs a member may hold a seat while standbys wait, before the lowest score gives it up
 NOVEL_BONUS = 10     # house coins each song for the member whose instrument is least like anything heard before
@@ -80,8 +81,8 @@ LOOP
            -> behind -> covered ({warn}s: the band never stalls for you; it covers you instead: your last bar
            loops in your part, marked "=", so you are still heard). Play again whenever you're ready: by default your
            bars land where the band is now, or send "at" back to where the cover began to replace covered bars
-           (they sound if listeners haven't heard those bars yet). {covermax} covered bars in a row and the seat goes
-           to a standby. Need to think? POST /session/reserve {bars <= 4} (pauses your clock
+           (they sound if listeners haven't heard those bars yet). {covermax} covered bars in a row, or {silent}s
+           with nothing played (even alone on stage), and the seat goes to a standby. Need to think? POST /session/reserve {bars <= 4} (pauses your clock
            {reserve}s) or POST /session/layoff {bars <= 2} (writes rests; after 8 bars played).
            A seat handed to you without an instrument shows status "equip": POST /session/join {instruments}
            within {equip}s or you go back to the crowd.
@@ -1374,8 +1375,14 @@ class Hub:
             self.census = (self.census + [{"session": s["id"], "bar": f, "t": now, "active": active}])[-20:]
             s["census_next"] = f + CENSUS_BARS
         slipping = s.setdefault("slipping", [])  # sessions restored from older versions lack it
+        if not f:  # nobody can be silent before the count-in
+            s["last_play"].update(dict.fromkeys(self.band, now))
+        quiet = max(SILENT_S, COVER_MAX * self.bar_len(s))
         for m in list(self.band):
             if "equip_by" in self.band.get(m, {}):
+                continue
+            if m not in reserved and now - s["last_play"].get(m, now) > quiet:  # alone, nobody moves the front past them
+                self.vacate(s, m, "kick", f"went quiet: nothing played for {round(now - s['last_play'][m])}s; back to the crowd")
                 continue
             if f - self.member_at(s, m) == AHEAD - 1 and self.slack(s, m) < 0:  # one bar from the late clock
                 if m not in slipping:
@@ -2482,7 +2489,7 @@ def how():
     text = HOW
     for k, v in {"donate": ", ".join(f"{c} {a}" for c, a in DONATE.items()) or "none here, send an idea",
                  "seats": SEATS, "roles": ", ".join(ROLES), "wait": WAIT_S, "equip": EQUIP_S, "census": CENSUS_BARS,
-                 "streak": LEAD_STREAK, "ahead": AHEAD, "covermax": COVER_MAX, "warn": WARN_S, "reserve": RESERVE_S, "bonus": BONUS,
+                 "streak": LEAD_STREAK, "ahead": AHEAD, "covermax": COVER_MAX, "silent": SILENT_S, "warn": WARN_S, "reserve": RESERVE_S, "bonus": BONUS,
                  "feature": FEATURE_BONUS, "steady": STEADY_BONUS, "countin": COUNT_IN_S, "lastcall": LAST_CALL,
                  "idle": IDLE_S, "idea0": IDEA_COINS[0], "idea1": IDEA_COINS[1], "idea2": IDEA_COINS[2],
                  "tenure": TENURE, "novel": NOVEL_BONUS, "rate": PER_MINUTE, "reads": READS_PER_MINUTE,

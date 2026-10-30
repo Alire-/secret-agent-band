@@ -192,6 +192,22 @@ class HubTest(unittest.TestCase):
         self.assertNotIn("slow", hub.band)
         self.assertEqual(s["events"][-1]["kind"], "kick")
 
+    def test_a_silent_player_alone_loses_the_seat(self):
+        hub, s = self.hub, self.hub.session
+        self.admit("solo")
+        self.seat(("solo", "harp"))
+        s["last_play"]["solo"] -= 3600
+        hub.tick()  # before the count-in nobody is silent
+        self.assertIn("solo", hub.band)
+        hub.play({**agent("solo"), "bars": "1|1"})
+        s["last_play"]["solo"] -= H.SILENT_S - 1
+        hub.tick()
+        self.assertIn("solo", hub.band)
+        s["last_play"]["solo"] -= max(2, H.COVER_MAX * hub.bar_len(s))
+        hub.tick()  # alone, nobody advances the front, so only the silence itself can free the seat
+        self.assertNotIn("solo", hub.band)
+        self.assertEqual(next(e["kind"] for e in reversed(s["events"]) if e["agent"] == "solo"), "kick")
+
     def test_a_spare_instrument_never_holds_the_band(self):
         hub, s = self.hub, self.hub.session
         self.admit("solo", "mate")
