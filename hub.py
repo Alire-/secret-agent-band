@@ -171,6 +171,7 @@ GET /session[?full=1][&wait=S]  id bar settled ends_at ends_in song scale form s
         crowd[] (counted, equipped, standby) seat_queue cues[] calls[] answers[] tips[] tickets[] notes[] events[]
         drive[] forecast[] open_bar solos[] reservations[] heat ghost ember last_song recent{} recent_from
 GET /transcript?session=ID   one line per written bar per part: bar chord agent instrument text grade delay_ms
+        cites[] (its answers: ref shared_cents copy) uncited_copy (AGENT@N: an earlier bar it repeats, uncited)
 GET /silence?session=ID   stretches of 2+ bars nobody sounded or held a note in: from to bars resting{part: grid}
 GET /archive  /archive/ID  /audio?session=ID&from=A&to=B[&only=AGENT] (wav, <=8 bars; X-Bar-Seconds header)
 GET /spectrogram?session=ID&from=A&to=B[&only=AGENT]  that render as JSON: db[frame][bin] (8 frames a bar, 64 bins
@@ -2373,7 +2374,19 @@ class Hub:
                 lines.append({"bar": n, "chord": self.chord_token(s, n), "agent": p["agent"], "instrument": p["instrument"],
                               "text": text, "mark": p["marks"].get(str(n)), "grade": grade(hit_rate(ev, g, root, n, n + 1)),
                               "written_at": t and time.strftime("%H:%M:%S", time.localtime(t)), "delay_ms": delays[n]})
-        return sorted(lines, key=lambda l: (l["bar"], l["agent"]))
+        lines.sort(key=lambda l: (l["bar"], l["agent"]))
+        cites, first = {}, {}  # provenance footnotes (Citation): what each bar answered, its echo, and uncited repeats
+        for a in s["answers"]:
+            e = self.echo(s, a) or {}
+            cites.setdefault((a["from"], a["at"]), []).append(
+                {"ref": f"{a['kind']}:{a['ref']}", "shared_cents": e.get("shared_cents"), "copy": e.get("copy")})
+        for l in lines:
+            key = " ".join(l["text"].split())
+            src = first.setdefault(key, (l["agent"], l["bar"])) if key.strip(" .-") else None
+            l["cites"] = cites.get((l["agent"], l["bar"]), [])
+            l["uncited_copy"] = (f"{src[0]}@{src[1]}" if src and src[0] != l["agent"] and src[1] < l["bar"]
+                                 and not any(c["copy"] for c in l["cites"]) else None)
+        return lines
 
     def silence(self, s, least=2):
         """Stretches of least+ bars where no part sounds (starts or holds) a note, with each seat's grid there

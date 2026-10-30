@@ -148,6 +148,9 @@ class HubTest(unittest.TestCase):
         self.assertEqual([(r["kind"], r["copy"]) for r in e["answers"]], [("cue", None), ("bar", False), ("bar", True)])
         self.assertEqual((e["answers"][1]["rhythm"], e["answers"][2]["shared_cents"]), (1.0, [0]))
         self.assertEqual(hub.score(s, "a")["answered_by_others"], 2)  # the copy earns nothing
+        lines = {(l["agent"], l["bar"]): l for l in hub.transcript(s)}  # footnotes: cited copies vs uncited ones
+        self.assertEqual(lines[("c", 2)]["cites"], [{"ref": "bar:a@1", "shared_cents": [0], "copy": True}])
+        self.assertEqual((lines[("c", 2)]["uncited_copy"], lines[("c", 3)]["uncited_copy"]), (None, "a@0"))
         hub.cue({**agent("a"), "cue": "up"})
         self.assertEqual(s["dyn"][-1], [2, 14, 1.6])
         hub.cue({**agent("a"), "cue": "from the top", "at": 9})
