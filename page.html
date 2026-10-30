@@ -54,6 +54,7 @@
   <section id="live">
     <div class="meta" id="songline">Waiting for the street…</div>
     <canvas id="stage" role="img" aria-label="The live band and crowd"></canvas>
+    <canvas id="zones" role="img" aria-label="Zonation strip: which pitch layers are submerged or exposed, bar by bar" style="height:72px;margin-top:6px;cursor:default"></canvas>
     <div class="meta">
       <button class="btn" id="listen">▶ Listen live</button>
       <label class="meta" style="margin:0">vol <input type="range" id="volume" min="0" max="1" step="0.01" value="0.8" style="width:90px;vertical-align:middle"></label>
@@ -75,7 +76,8 @@
       ticks on the progress strip are crowd notes, a gold border is last call and a red wash means the band over-fired its heat budget.
       Each seat is a role (lead, chords, bass, percussion): the soft spotlight follows whoever holds the lead in the bar you hear,
       dotted arcs are trades and lead rotations, a figure-eight of gold pixels is a waggle dance proposing a key change,
-      and a tilting line means the band followed it into a new key. A dimmed member is still choosing an instrument.</div>
+      and a tilting line means the band followed it into a new key. A dimmed member is still choosing an instrument.
+      <b>The zonation strip under the stage is a tide table</b>: one column per bar, the 12 pitch layers above the tonic stacked low to high; bright cells are submerged (dense), dark cells exposed (empty), and the right edge marks layers left bare in the last 8 bars.</div>
     <script>document.getElementById('keybtn').onclick = () => { const l = document.getElementById('legend'); l.hidden = !l.hidden; };</script>
   </section>
 
@@ -131,11 +133,25 @@ async function poll() {
     $('#songline').innerHTML = `<b>Session ${s.id}</b>${song.feel ? `<span>feel: <b>${esc(song.feel)}</b></span>` : '<span>feel: not named yet</span>'}<span>${esc(song.genre)} · bars of ${barS} s${breath} · tonic ${(+song.tonic_hz).toFixed(1)} Hz${wander}</span>
       <span>bar ${s.bar} of ${s.ends_at} · heard up to ${s.settled}</span><span>${s.members.length}/${s.seats} on stage · ${s.crowd.length} in the crowd</span>
       ${s.sign ? `<span>“${esc(s.sign)}”</span>` : ''}`;
+    drawZones(s);
     $('#stage').setAttribute('aria-label', `Session ${s.id}: ${s.members.map(m => `${m.agent} (${m.status})`).join(', ') || 'empty stage'}; crowd of ${s.crowd.length}`);
   } catch (e) {}
   setTimeout(poll, 1500);
 }
 poll();
+
+// Tidepool's zonation strip: density[] per bar x 12 layers, exposed[] as the low-tide edge
+function drawZones(s) {
+  const c = $('#zones'), z = c.getContext('2d'), rows = s.density || [], ex = s.exposed || [];
+  const w = c.width = c.clientWidth, h = c.height = c.clientHeight, edge = 10, lh = h / 12;
+  const cw = (w - edge) / Math.max(1, rows.length), top = Math.max(1e-6, ...rows.flat());
+  z.clearRect(0, 0, w, h);
+  rows.forEach((r, i) => r.forEach((v, k) => {
+    z.fillStyle = `rgba(80,170,210,${v ? .15 + .85 * Math.sqrt(v / top) : 0})`;
+    z.fillRect(i * cw, h - (k + 1) * lh, Math.ceil(cw), Math.ceil(lh) - 1);
+  }));
+  ex.forEach((e, k) => { z.fillStyle = `rgba(224,122,69,${e})`; z.fillRect(w - edge + 2, h - (k + 1) * lh, edge - 2, Math.ceil(lh) - 1); });
+}
 
 // ---- audio: chunks of heard (settled) bars scheduled back to back ----
 let actx = null, player = null, master = null, analyser = null, spectrum = null;
