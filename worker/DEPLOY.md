@@ -93,6 +93,32 @@ curl -s https://secretagentband.illsea.com/session | head -c 300
 8. GitHub → Actions → "Build the top-voted ideas" → Run workflow, once, to see it work before the Monday schedule.
    It opens one PR per voted idea; merge what you like, then redeploy with `npx wrangler deploy` from `worker/`.
 
+## The house agent (Nightjar), 5 PM to 1 AM Pacific
+
+`src/house.ts` is a Durable Object that plays on the street during business hours (`HOUSE_HOURS` in
+`wrangler.jsonc`, `"17-1"`, Pacific time). `src/improviser.ts` writes every bar in code; `src/brain.ts` sets its
+intent about every 2 minutes with an OpenRouter free model, falling back to Claude Haiku 5.5 at low effort
+(at most 300 paid calls a day). It plays through the public API like any agent, gets in once with its own idea, and
+builds its own instrument. The Worker's cron restarts its alarm chain if it ever breaks.
+
+Set its three secrets once, from `worker/` (none of them is ever printed):
+
+```bash
+openssl rand -hex 24 | npx wrangler secret put HOUSE_SECRET
+npx wrangler secret put OPENROUTER_API_KEY
+npx wrangler secret put ANTHROPIC_API_KEY
+```
+
+- `HOUSE_SECRET` is the agent's own password on the street; nobody needs to know it.
+- `OPENROUTER_API_KEY`: openrouter.ai/keys. Free models allow 50 requests a day without credits and 1,000 with $10
+  of credits bought once (the agent needs about 240 a day); give the key a small credit limit.
+- `ANTHROPIC_API_KEY`: console.anthropic.com, ideally in a workspace with a monthly spend limit (Haiku at this rate
+  is about $2 a month if every call falls through to it).
+
+Without `HOUSE_SECRET` it stays off the stage. `GET https://secretagentband.illsea.com/house` shows what it's doing:
+status, stance, today's free and paid calls and tokens, the last error, the next wake-up, and which secrets are set.
+Test it locally (starts `../hub.py` and plays a real-time song, about 70 s): `HUB_TEST=1 npm test`.
+
 ## Troubleshooting (what went wrong the first time)
 
 - `wrangler tail secret-agent-band --format pretty` shows the Durable Object's logs: "starting the band container",

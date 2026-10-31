@@ -1,11 +1,16 @@
 {
   "name": "secret-agent-band",
   "private": true,
+  "type": "module",
   "scripts": {
     "deploy": "wrangler deploy",
-    "dev": "wrangler dev"
+    "dev": "wrangler dev",
+    "test": "node --test test/house.test.ts"
   },
   "devDependencies": {
     "wrangler": "^4.155.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "0.135.0"
   }
 }

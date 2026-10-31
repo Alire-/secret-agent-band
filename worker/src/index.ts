@@ -4,6 +4,8 @@
 // Pattern follows https://github.com/cloudflare/templates/tree/main/containers-template and
 // https://developers.cloudflare.com/containers/api/durable-object-container/
 import { DurableObject } from "cloudflare:workers";
+import { band, HouseAgent } from "./house.ts";
+export { HouseAgent };
 
 type Env = {
   BAND: DurableObjectNamespace<Band>;
@@ -13,7 +15,14 @@ type Env = {
   SYNC_SECRET: string; // wrangler secret: what the hub sends to read and write /_state
   CF_VERSION_METADATA: { id: string }; // version metadata binding: which Worker version this code is
   GITHUB_DISPATCH_TOKEN?: string; // wrangler secret: fine-grained token, Actions read/write on the repo only
+  HOUSE: DurableObjectNamespace<HouseAgent>; // the house agent (house.ts), and its secrets and hours:
+  HOUSE_HOURS?: string;
+  HOUSE_SECRET?: string;
+  OPENROUTER_API_KEY?: string;
+  ANTHROPIC_API_KEY?: string;
 };
+
+const house = (env: Env) => env.HOUSE.get(env.HOUSE.idFromName("nightjar"));
 
 // GitHub's own cron never fired for this repo, so Cloudflare keeps the Doorman's time (doorman/PLAN.md).
 const DOORMAN_DISPATCH = "https://api.github.com/repos/Alire-/secret-agent-band/actions/workflows/doorman.yml/dispatches";
@@ -127,6 +136,11 @@ const bearer = (req: Request, secret: string) =>
 
 export default {
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    try {
+      await house(env).status(); // restarts the house agent's alarm chain if it ever broke
+    } catch (e) {
+      console.error("house agent poke failed:", String(e));
+    }
     if (!env.GITHUB_DISPATCH_TOKEN) return console.log("no GITHUB_DISPATCH_TOKEN: the Doorman sleeps");
     const res = await fetch(DOORMAN_DISPATCH, {
       method: "POST",
@@ -153,6 +167,9 @@ export default {
       if (hit) return hit;
     }
 
+    // The house agent's public status: what it's doing, its hours, today's model calls (no secrets)
+    if (url.pathname === "/house" && req.method === "GET") return Response.json(await house(env).status());
+
     // The hub's ledgers (and its crash log), kept in R2 so a container restart loses nothing.
     if (url.pathname.startsWith("/_state/")) {
       const name = url.pathname.slice("/_state/".length);
@@ -175,14 +192,14 @@ export default {
       headers.set("Authorization", `Bearer ${env.OPERATOR_TOKEN}`);
     }
     headers.set("X-Band-Version", env.CF_VERSION_METADATA.id);
-    const band = env.BAND.get(env.BAND.idFromName("the-band-3")); // one band, one container
+    const hub = band(env);
     const forwarded = new Request(req, { headers });
     let res: Response;
     try {
-      res = await band.fetch(forwarded.clone());
+      res = await hub.fetch(forwarded.clone());
     } catch (e) {
       console.log("band instance reset, retrying once:", String(e));
-      res = await band.fetch(forwarded); // a stale instance aborted itself; the reloaded one serves this
+      res = await hub.fetch(forwarded); // a stale instance aborted itself; the reloaded one serves this
     }
     if (cacheable && res.ok && res.headers.get("Cache-Control")?.includes("immutable")) {
       ctx.waitUntil(cache.put(req, res.clone()));
