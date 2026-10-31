@@ -177,7 +177,7 @@ showTab(location.hash.slice(1) || 'live');
 
 // ---- live state ----
 let state = null, lastVotes = {}, clockSeen = {bar: null, t: 0};
-const seen = { tips: new Set(), calls: new Set(), cues: new Set(), answers: new Set(), events: new Set() };
+const seen = { tips: new Set(), calls: new Set(), cues: new Set(), answers: new Set(), events: new Set(), notes: new Set(), reviews: new Set() };
 const fx = [];  // transient effects: {kind, from, to, t0, life, ...}
 const spot = (kind, o) => fx.push({kind, t0: performance.now(), life: 1600, ...o});
 
@@ -187,11 +187,23 @@ async function poll() {
     if (state && state.id !== s.id) for (const k in seen) seen[k].clear();
     const first = !state;
     const fresh = (list, key, fn) => { for (const x of list) if (!seen[key].has(x.id)) { seen[key].add(x.id); if (!first) fn(x); } };
-    fresh(s.tips, 'tips', t => { for (const m in t.to) spot('tip', {from: t.from, to: m, life: 1400}); });
-    fresh(s.calls, 'calls', c => spot('call', {from: c.from, life: 2000}));
-    fresh(s.cues, 'cues', c => spot('cue', {from: c.from, to: c.to}));
-    fresh(s.answers, 'answers', a => spot('answer', {from: a.from, to: a.to}));
+    fresh(s.tips, 'tips', t => { for (const m in t.to) { spot('tip', {from: t.from, to: m, life: 1400}); stream(where[t.from], where[m], 48, 'drums', 5); } });
+    fresh(s.calls, 'calls', c => { spot('call', {from: c.from, life: 2000}); say(c.from, c.phrase, hue(c.from)); });
+    fresh(s.cues, 'cues', c => { spot('cue', {from: c.from, to: c.to}); say(c.from, c.cue + (c.means ? ': ' + c.means : ''), hue(c.from), true);
+      for (const m of s.members) if (m.agent !== c.from && (!c.to || c.to === m.agent)) stream(where[c.from], where[m.agent], hue(c.from), 'chord', 8); });
+    fresh(s.answers, 'answers', a => { spot('answer', {from: a.from, to: a.to}); stream(where[a.from], where[a.to], hue(a.from), 'tetra', 6); });
+    fresh(s.notes || [], 'notes', n => say(n.from, n.text, hue(n.from)));
+    for (const [m, f] of Object.entries((s.floor || {}).members || {})) for (const r of f.reviews || []) {
+      const key = m + '|' + r.from + '|' + r.text;
+      if (!seen.reviews.has(key)) { seen.reviews.add(key); if (!first) say(r.from, r.text, hue(r.from)); }
+    }
     fresh(s.events, 'events', e => { spot(e.kind, {from: e.agent, life: 2400});
+      if (e.agent) {  // the words in what just happened, out of whoever did it
+        const word = e.kind === 'stance' ? e.note.replace(/^now /, '') : e.kind === 'join' ? e.note.split(': ').pop()
+          : e.kind === 'song' ? (e.note.match(/feel: ([^;]+)/) || [])[1] : e.kind === 'solo' ? 'SOLO' : e.kind === 'kick' ? 'KICKED'
+          : e.kind === 'waggle' ? 'KEY CHANGE?' : e.kind === 'modulate' ? 'NEW KEY' : null;
+        if (word) say(e.agent, word, hue(e.agent), e.kind === 'song');
+      }
       if (['kick', 'join', 'song', 'last call', 'modulate', 'stance'].includes(e.kind)) jolt(); });
     for (const [m, voters] of Object.entries(s.votes || {})) for (const [v, vibe] of Object.entries(voters)) {
       const k = m + '|' + v;
@@ -359,6 +371,80 @@ function solid(kind, x, y, r, rx, ry, hueN, lit, alpha = 1) {
   g.beginPath();
   for (const f of m.f) f.forEach((i, k) => { const j = f[(k + 1) % f.length]; g.moveTo(P[i][0], P[i][1]); g.lineTo(P[j][0], P[j][1]); });
   g.stroke(); g.restore();
+}
+
+// ---- what comes out of the music: wireframe particles off every note, the note itself in vector letters, the words
+// the agents use flying out of whoever said them, and streams between agents when they answer, cue or tip ----
+MESH.tetra = {v: [[1,1,1],[-1,-1,1],[-1,1,-1],[1,-1,-1]].map(p => p.map(c => c * .8)), f: [[0,1,2],[0,3,1],[0,2,3],[1,3,2]]};
+const PARTS = [], WORDS = [], MINI = {pitched: 'tetra', chord: 'chord', drums: 'drums', synth: 'chord'};
+// a solid's edges only, no faces and no glow: cheap enough for hundreds of particles
+function wire(kind, x, y, r, rx, ry, hueN, alpha) {
+  const m = MESH[kind] || MESH.tetra, cx = Math.cos(rx), sx = Math.sin(rx), cy = Math.cos(ry), sy = Math.sin(ry);
+  const P = m.v.map(([a, b, c]) => { const X = a * cy + c * sy, Z0 = -a * sy + c * cy, Y = b * cx - Z0 * sx; return [x + X * r, y + Y * r]; });
+  g.globalAlpha = Math.max(0, alpha); g.strokeStyle = `hsl(${hueN},100%,72%)`; g.lineWidth = 1; g.beginPath();
+  for (const f of m.f) f.forEach((i, k) => { const j = f[(k + 1) % f.length]; g.moveTo(P[i][0], P[i][1]); g.lineTo(P[j][0], P[j][1]); });
+  g.stroke(); g.globalAlpha = 1;
+}
+// letters the way 80s computers drew them: outlines with a stepped extrusion behind, each letter turning on its own axis
+function vecText(text, x, y, size, hueN, alpha, phase = 0, tumble = false) {
+  if (alpha <= 0 || size < 4) return;
+  g.save(); g.globalAlpha = Math.min(1, alpha); g.font = `900 ${size}px Orbitron, Bungee, monospace`; g.textBaseline = 'middle';
+  const chars = [...text], widths = chars.map(c => g.measureText(c).width), total = widths.reduce((a, b) => a + b, 0);
+  let left = x - total / 2;
+  chars.forEach((c, i) => {
+    const turn = tumble ? .62 + .38 * Math.cos(phase + i * .45) : 1;  // a swing, not a flip: the word stays readable
+    g.save(); g.translate(left + widths[i] / 2, y); g.scale(turn, 1);
+    for (let d = 3; d >= 1; d--) { g.strokeStyle = `hsla(${hueN},100%,${38 + d * 6}%,${.45 / d})`; g.lineWidth = 1; g.strokeText(c, -widths[i] / 2 + d * 1.3, d * 1.3); }
+    g.strokeStyle = `hsl(${hueN},100%,78%)`; g.lineWidth = 1.3; g.strokeText(c, -widths[i] / 2, 0);
+    g.restore(); left += widths[i];
+  });
+  g.restore();
+}
+// a note leaves its instrument: a few spinning solids and its token, flying up and toward you
+function emit(x, y, hueN, kind, tok, accent) {
+  if (calm.matches) return;
+  for (let k = 0; k < (accent ? 5 : 2) && PARTS.length < 600; k++)
+    PARTS.push({x, y, z: 0, vx: (Math.random() - .5) * 80, vy: -70 - Math.random() * 80, vz: -.3 - Math.random() * .4,
+                rx: Math.random() * 6, ry: Math.random() * 6, vr: (Math.random() - .5) * 7, hue: hueN + (Math.random() - .5) * 40,
+                kind: MINI[kind] || 'tetra', size: 3 + Math.random() * 4 + (accent ? 3 : 0), t: 0, life: 1.4 + Math.random() * .9});
+  if (tok && PARTS.length < 600) PARTS.push({x, y: y - 8, z: 0, vx: (Math.random() - .5) * 26, vy: -50, vz: -.22, hue: hueN, text: tok.replace(/[~>!_]/g, ''),
+                                            size: accent ? 15 : 12, t: 0, life: 1.9, spin: Math.random() * 3});
+}
+// one agent reaches another: a stream of small solids along the way (answers, cues, tips)
+function stream(a, b, hueN, kind = 'tetra', n = 6) {
+  if (calm.matches || !a || !b) return;
+  for (let k = 0; k < n && PARTS.length < 600; k++) {
+    const life = .9 + k * .06, dx = (b.x - a.x) / life, dy = (b.y - a.y) / life;
+    PARTS.push({x: a.x, y: a.y, z: 0, vx: dx * (.9 + Math.random() * .2), vy: dy * (.9 + Math.random() * .2) - 30, vz: 0, rx: k, ry: k * 2,
+                vr: 5, hue: hueN, kind, size: kind === 'drums' ? 4 : 5, t: -k * .06, life, nofall: true});
+  }
+}
+// a word leaves an agent: it rises and grows toward you, letters turning, then fades
+function say(agent, text, hueN, big) {
+  text = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!text || calm.matches) return;
+  WORDS.push({agent, text: text.length > 36 ? text.slice(0, 35) + '…' : text, hue: hueN, t: 0, life: big ? 5.5 : 4, big});
+  if (WORDS.length > 30) WORDS.shift();
+}
+function drawFlight(dt, pos) {
+  for (let i = PARTS.length - 1; i >= 0; i--) {
+    const p = PARTS[i]; p.t += dt;
+    if (p.t < 0) continue;
+    if (p.t > p.life) { PARTS.splice(i, 1); continue; }
+    p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt; if (!p.nofall) p.vy += 22 * dt;
+    const k = 1 / Math.max(.3, 1 + p.z), a = 1 - p.t / p.life;
+    if (p.text) vecText(p.text, p.x, p.y, p.size * k, p.hue, a, p.spin + p.t * 3, true);
+    else { p.rx += p.vr * dt; p.ry += p.vr * .7 * dt; wire(p.kind, p.x, p.y, p.size * k, p.rx, p.ry, p.hue, a); }
+  }
+  for (let i = WORDS.length - 1; i >= 0; i--) {
+    const w = WORDS[i]; w.t += dt;
+    if (w.t > w.life) { WORDS.splice(i, 1); continue; }
+    if (w.x === undefined) { const at = pos(w.agent); if (!at) { WORDS.splice(i, 1); continue; } w.x = at.x; w.y = at.y - 30; }
+    const u = w.t / w.life, size = (w.big ? 19 : 14) * (1 + u * 1.1);
+    g.font = `900 ${size}px Orbitron, Bungee, monospace`;
+    const half = Math.min(W / 2 - 8, g.measureText(w.text).width / 2 + 10), x = Math.min(W - half, Math.max(half, w.x));  // keep it on screen
+    vecText(w.text, x, w.y - u * 110, size, w.hue, Math.min(1, (1 - u) * 1.8), w.t * 1.4, true);
+  }
 }
 
 // the vector horizon: a range of wireframe mountains, fixed like a Battlezone skyline
@@ -682,7 +768,10 @@ function draw(now) {
       drawInstrument(part.instrument, p.x + (keys.length > 1 ? (j ? 30 : -30) * Math.max(u, .8) : 0), p.y + 82, h, on, tok, now, keys.length > 1);
       if (on) fx.push({kind: 'spark', x: sx + (Math.random() - .5) * 18, y: sy - r, t0: now, life: 700, color: `hsl(${h},80%,75%)`});
       const slotKey = Math.floor(showing) * 1000 + Math.floor((showing % 1) * view.slots);  // one onset per slot
-      if (on && lastTok[k] !== slotKey) { lastTok[k] = slotKey; onset = Math.min(1, onset + .5); if (!calm.matches) spin += .006; }
+      if (on && lastTok[k] !== slotKey) {
+        lastTok[k] = slotKey; onset = Math.min(1, onset + .5); if (!calm.matches) spin += .006;
+        emit(p.x + (keys.length > 1 ? (j ? 30 : -30) * Math.max(u, .8) : 0), p.y + 80, h, part.synth ? 'synth' : part.kind, tok, tok.includes('!'));
+      }
       if (!j) drawTokens(view, k, showing, p.x, p.y - 62, h, now);
       // drift: hit rate per bar, last 16 bars
       if (!j && part.drift) part.drift.slice(-16).forEach((d, b) => {
@@ -805,6 +894,7 @@ function draw(now) {
       g.strokeStyle = `rgba(255,225,74,${1 - t})`; g.lineWidth = 2; g.beginPath(); g.arc(a.x, a.y, 20 + t * 50, 0, Math.PI * 2); g.stroke();
     }
   }
+  drawFlight(Math.min(.05, dt), pos);
   glitch(now);
   if (hear && hear.sid === view.id) $('#hearing').textContent = `hearing bar ${heardBar} of session ${view.id}${player && player.only ? ' · solo ' + player.only : ''}`;
   requestAnimationFrame(draw);
