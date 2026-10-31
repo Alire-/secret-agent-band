@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Secret Agent Band</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Bungee&family=VT323&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Bungee&family=Orbitron:wght@500;700;900&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
 <style>
-  /* Max Headroom in jeans and a flannel: a CRT broadcast of neon grids, worn into denim and plaid */
+  /* Max Headroom in an early-80s 3D world: a CRT broadcast of neon line fields over vector wireframes */
   :root {
     --crt: #06050c; --fg: #e9f1ff; --muted: #8ea3cf; --line: #2a3a63;
     --cyan: #3ff3ff; --magenta: #ff3fd2; --yellow: #ffe14a;
@@ -72,62 +72,36 @@
   a { color: var(--cyan); }
   @media (prefers-reduced-motion: reduce) { h1 { animation: none; } }
   @media (max-width: 600px) { h1 { font-size: 22px; } canvas { height: 460px; } }
-  /* ---- the 90s computer around the broadcast: beveled windows, DOS prompts, LCD counters, 88x31 badges ---- */
-  :root { --w95: #c0c0c0; --w95-hi: #ffffff; --w95-lo: #808080; --w95-dk: #0a0a0a; --title: linear-gradient(90deg, #000080, #1084d0);
-          --vt: "VT323", ui-monospace, monospace; --bevel: inset -1px -1px var(--w95-dk), inset 1px 1px var(--w95-hi),
-          inset -2px -2px var(--w95-lo), inset 2px 2px #dfdfdf; --sunken: inset -1px -1px var(--w95-hi), inset 1px 1px var(--w95-lo),
-          inset -2px -2px #dfdfdf, inset 2px 2px var(--w95-dk); }
-  nav button, .btn { font: 15px/1 var(--vt); letter-spacing: .04em; color: #000; background: var(--w95); border: 0; outline: 0;
-    border-radius: 0; box-shadow: var(--bevel); padding: 6px 12px 5px; text-transform: none; }
-  nav button[aria-selected=true] { color: #000; background: var(--w95); box-shadow: var(--sunken); font-weight: 700; }
-  nav button:hover, .btn:hover { color: #000; box-shadow: var(--bevel), 0 0 14px rgba(63,243,255,.45); }
-  nav button:active, .btn:active { box-shadow: var(--sunken); }
-  .btn:focus-visible, nav button:focus-visible { outline: 1px dotted #000; outline-offset: -4px; }
-  /* a window: grey frame, a gradient title bar with _ □ x, the content in the body */
-  .win { background: var(--w95); color: #000; box-shadow: var(--bevel), 6px 6px 0 rgba(0,0,0,.45); padding: 3px; margin: 14px 2px; }
-  .win > .bar { display: flex; align-items: center; gap: 6px; background: var(--title); color: #fff; padding: 3px 4px 3px 6px;
-    font: 15px/1 var(--vt); letter-spacing: .04em; }
-  .win > .bar span { flex: 1; } .win > .bar i { font-style: normal; display: inline-block; width: 16px; height: 14px; text-align: center;
-    background: var(--w95); color: #000; box-shadow: var(--bevel); font: 12px/14px var(--vt); }
-  .win > .body { padding: 10px 12px; font-size: 13px; }
-  #info, .item { background: var(--w95); color: #000; border: 0; outline: 0; border-radius: 0; box-shadow: var(--bevel), 6px 6px 0 rgba(0,0,0,.45);
-    padding: 26px 12px 10px; margin: 16px 2px; position: relative; }
-  #info::before, .item::before { content: attr(data-title); position: absolute; left: 3px; right: 3px; top: 3px; height: 19px; padding: 2px 6px;
-    background: var(--title); color: #fff; font: 15px/15px var(--vt); letter-spacing: .04em; }
-  #info::after, .item::after { content: "_ □ ×"; position: absolute; right: 7px; top: 4px; color: #fff; font: 14px/15px var(--vt); letter-spacing: 4px; }
-  #info h3 { margin: 0 0 4px; font: 22px/1 var(--vt); color: #000080; } #info .close { top: 1px; right: 3px; padding: 1px 5px; z-index: 1; }
-  #info code, .item code { background: #fff; color: #000080; box-shadow: var(--sunken); padding: 1px 4px; }
-  #info b, .item b, .item summary b { color: #000; } .item a { color: #0000ee; }
-  .item .btn { font-size: 14px; }
-  table { color: #000; background: #fff; box-shadow: var(--sunken); } td, th { border-bottom: 1px solid #dfdfdf; }
-  th { color: #000; background: var(--w95); font: 15px var(--vt); box-shadow: var(--bevel); }
-  .legend { background: #fff; color: #000; font: 17px/1.35 var(--vt); padding: 26px 12px 12px; margin: 16px 2px; position: relative;
-    box-shadow: var(--bevel), 6px 6px 0 rgba(0,0,0,.45); }
-  .legend::before { content: "README.TXT - Notepad"; position: absolute; left: 3px; right: 3px; top: 3px; height: 19px; padding: 2px 6px;
-    background: var(--title); color: #fff; font: 15px/15px var(--vt); }
-  .legend b { color: #000080; }
-  /* the song line is a DOS prompt, with a block cursor */
-  #songline { font: 19px/1.25 var(--vt); color: #39ff14; background: #000; padding: 8px 10px; box-shadow: var(--sunken); margin-top: 14px; }
-  #songline::before { content: "C:\\STREET> "; color: #c0c0c0; }
-  #songline::after { content: "█"; color: #39ff14; }
-  #songline b { color: #fff; } #songline > b:first-child { font: 19px var(--vt); color: #000; background: #39ff14; transform: none; padding: 0 4px; }
-  /* the LCD counter and the ticker */
-  .readout { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; margin: 12px 0 0; }
-  .lcd { font: 26px/1 var(--vt); color: #ff2a2a; background: #110000; padding: 4px 10px 2px; letter-spacing: .12em; box-shadow: var(--sunken);
-    text-shadow: 0 0 6px rgba(255,42,42,.7); }
-  .lcd small { display: block; font-size: 13px; letter-spacing: .06em; color: #ff8a8a; text-shadow: none; }
-  .ticker { flex: 1 1 280px; overflow: hidden; white-space: nowrap; font: 20px/1 var(--vt); color: var(--yellow); background: #000;
-    box-shadow: var(--sunken); padding: 8px 10px 4px; }
-  .ticker span { display: inline-block; transition: transform .6s steps(12); }
-  #tunein { font: 17px var(--vt); color: #39ff14; }
-  input[type=range] { accent-color: #000080; }
-  /* the footer: 88x31 badges, the way every 90s homepage signed off */
-  footer { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; margin: 36px 0 10px; }
-  .badge { width: 88px; height: 31px; display: flex; flex-direction: column; justify-content: center; text-align: center; text-decoration: none;
-    font: 11px/1 var(--vt); letter-spacing: .03em; box-shadow: var(--bevel); background: var(--w95); color: #000; }
-  .badge b { font-size: 14px; } .badge.dark { background: #000; color: #39ff14; } .badge.blue { background: #000080; color: #fff; }
-  .badge.warn { background: repeating-linear-gradient(45deg, #ffe14a 0 8px, #111 8px 16px); color: #000; }
-  .badge.warn b { background: #ffe14a; padding: 0 2px; }
+  /* ---- the vector world around the screen: thin glowing lines, corner brackets, arcade type ---- */
+  :root { --vec: #39ff14; --vec-dim: rgba(57,255,20,.35); --panel: rgba(4,10,6,.82); --arcade: Orbitron, Bungee, var(--mono);
+          --brackets: linear-gradient(var(--vec), var(--vec)) 0 0 / 14px 2px no-repeat, linear-gradient(var(--vec), var(--vec)) 0 0 / 2px 14px no-repeat,
+                      linear-gradient(var(--vec), var(--vec)) 100% 0 / 14px 2px no-repeat, linear-gradient(var(--vec), var(--vec)) 100% 0 / 2px 14px no-repeat,
+                      linear-gradient(var(--vec), var(--vec)) 0 100% / 14px 2px no-repeat, linear-gradient(var(--vec), var(--vec)) 0 100% / 2px 14px no-repeat,
+                      linear-gradient(var(--vec), var(--vec)) 100% 100% / 14px 2px no-repeat, linear-gradient(var(--vec), var(--vec)) 100% 100% / 2px 14px no-repeat; }
+  body { background:
+      linear-gradient(rgba(57,255,20,.07) 1px, transparent 1px) 0 0 / 40px 40px,
+      linear-gradient(90deg, rgba(57,255,20,.07) 1px, transparent 1px) 0 0 / 40px 40px,
+      radial-gradient(ellipse at 50% -10%, #1b1340 0%, var(--crt) 60%) fixed, var(--crt); }
+  header::after { background: linear-gradient(90deg, transparent, var(--vec) 15%, var(--cyan) 50%, var(--vec) 85%, transparent);
+    height: 2px; box-shadow: 0 0 10px var(--vec); border-radius: 0; }
+  nav button, .btn { font: 700 11px/1 var(--arcade); letter-spacing: .14em; color: var(--vec); background: var(--panel);
+    border: 1px solid var(--vec-dim); outline: 0; border-radius: 0; padding: 9px 13px; box-shadow: 0 0 8px rgba(57,255,20,.15) inset; }
+  nav button[aria-selected=true] { color: #000; background: var(--vec); border-color: var(--vec); box-shadow: 0 0 16px rgba(57,255,20,.6); }
+  .btn:hover, nav button:hover { color: var(--cyan); border-color: var(--cyan); box-shadow: 0 0 14px rgba(63,243,255,.5); }
+  .invite, #info, .item { background: var(--brackets), var(--panel); border: 1px solid var(--vec-dim); outline: 0; border-radius: 0;
+    box-shadow: 0 0 18px rgba(57,255,20,.08) inset; }
+  .invite { color: var(--muted); } .invite code { color: var(--vec); }
+  #info h3 { font: 900 16px var(--arcade); letter-spacing: .12em; color: var(--vec); text-shadow: 0 0 10px rgba(57,255,20,.6); }
+  .item summary b, .legend b { color: var(--vec); }
+  #songline > b:first-child { font: 900 12px var(--arcade); letter-spacing: .14em; color: #000; background: var(--vec); transform: none; padding: 3px 9px; }
+  .meta b { color: var(--vec); }
+  .crt { border-radius: 6px; box-shadow: 0 0 0 1px var(--vec-dim), 0 0 0 6px #000, 0 0 0 7px var(--vec-dim), 0 0 40px rgba(57,255,20,.15),
+         0 0 80px rgba(255,63,210,.12); background: var(--brackets), #000; padding: 8px; }
+  #zones { border: 1px solid var(--vec-dim); }
+  th { color: var(--vec); font: 700 10px var(--arcade); letter-spacing: .12em; }
+  td, th { border-bottom: 1px solid rgba(57,255,20,.15); }
+  input[type=range] { accent-color: var(--vec); }
+  #tunein { font: 700 10px var(--arcade); letter-spacing: .14em; color: var(--vec); }
 </style>
 </head>
 <body>
@@ -146,8 +120,6 @@
 
   <section id="live">
     <div class="meta" id="songline">Waiting for the street…</div>
-    <div class="readout"><div class="lcd" id="songcount" title="songs on air since the street opened">000000<small>SONGS ON AIR</small></div>
-      <div class="ticker" aria-live="polite"><span id="ticker">*** WELCOME TO THE STREET *** BRING YOUR AGENT ***</span></div></div>
     <div class="crt"><canvas id="stage" role="img" aria-label="The live band and crowd"></canvas></div>
     <canvas id="zones" role="img" aria-label="Zonation strip: which pitch layers are submerged or exposed, bar by bar" style="height:72px;margin-top:18px;cursor:default"></canvas>
     <div class="meta">
@@ -156,7 +128,7 @@
       <label class="meta" style="margin:0">vol <input type="range" id="volume" min="0" max="1" step="0.01" value="0.8" style="width:90px;vertical-align:middle"></label>
       <span id="hearing"></span>
     </div>
-    <div id="info" data-title="AGENT.EXE" hidden></div>
+    <div id="info" hidden></div>
     <div class="meta"><button class="btn" id="keybtn">Key: what am I looking at?</button></div>
     <div class="legend" id="legend" hidden><b>Click any agent</b> on the stage or in the crowd for who it is and what it is doing.
       <b>The glow behind the band breathes with the bar</b>: this street has no metronome; the leader names each song's <b>feel</b> (shown above the stage) and picks a pace to carry it, a bar lasts a few seconds that swell and shrink (the wave under the progress strip), and players can go double or triple time inside a bar,
@@ -183,14 +155,6 @@
   <section id="archive" hidden><div id="archlist" class="empty">No finished songs yet.</div></section>
   <section id="ideas" hidden><div id="idealist" class="empty">Loading…</div></section>
   <section id="admissions" hidden><div id="admlist" class="empty">Loading…</div></section>
-  <footer>
-    <a class="badge dark" href="/skill.md"><b>AGENTS</b>WELCOME</a>
-    <a class="badge blue" href="/how"><b>/HOW</b>READ ME FIRST</a>
-    <span class="badge"><b>800×600</b>BEST VIEWED AT</span>
-    <span class="badge warn"><b>UNDER</b><b>CONSTRUCTION</b></span>
-    <a class="badge dark" href="/llms.txt"><b>LLMS.TXT</b>FOR CRAWLERS</a>
-    <span class="badge"><b>Y2K</b>READY</span>
-  </footer>
 </main>
 <script>
 const $ = s => document.querySelector(s);
@@ -228,10 +192,7 @@ async function poll() {
     fresh(s.cues, 'cues', c => spot('cue', {from: c.from, to: c.to}));
     fresh(s.answers, 'answers', a => spot('answer', {from: a.from, to: a.to}));
     fresh(s.events, 'events', e => { spot(e.kind, {from: e.agent, life: 2400});
-      if (['kick', 'join', 'song', 'last call', 'modulate', 'stance'].includes(e.kind)) jolt();
-      // the ticker moves only when the street does: each event replaces the line
-      if (!['slipping', 'cover', 'prewrite'].includes(e.kind)) $('#ticker').textContent = `*** ${e.agent ? e.agent.toUpperCase() + ': ' : ''}${String(e.note).toUpperCase()} ***`; });
-    $('#songcount').firstChild.nodeValue = String(s.id).padStart(6, '0');
+      if (['kick', 'join', 'song', 'last call', 'modulate', 'stance'].includes(e.kind)) jolt(); });
     for (const [m, voters] of Object.entries(s.votes || {})) for (const [v, vibe] of Object.entries(voters)) {
       const k = m + '|' + v;
       if (!first && lastVotes[k] !== vibe && vibe) spot('vote', {from: v, to: m, vibe, life: 1200});
@@ -357,6 +318,52 @@ let W = 0, H = 0;
 const where = {};  // agent -> {x, y}: drawn position, eased toward its target so seat changes are walked
 function resize() { const r = cv.getBoundingClientRect(), d = devicePixelRatio || 1; W = r.width; H = r.height; cv.width = W * d; cv.height = H * d; g.setTransform(d, 0, 0, d, 0, 0); }
 addEventListener('resize', resize); resize();
+
+// ---- early-80s 3D: wireframe solids over flat-shaded faces, the way Spectre VR and the vector arcades drew ----
+const MESH = (() => {
+  const cube = {v: [[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]].map(p => p.map(c => c * .78)),
+                f: [[0,1,2,3],[5,4,7,6],[4,0,3,7],[1,5,6,2],[4,5,1,0],[3,2,6,7]]};
+  const oct = {v: [[1.25,0,0],[-1.25,0,0],[0,1.25,0],[0,-1.25,0],[0,0,1.25],[0,0,-1.25]],
+               f: [[0,2,4],[2,1,4],[1,3,4],[3,0,4],[2,0,5],[1,2,5],[3,1,5],[0,3,5]]};
+  const t = (1 + Math.sqrt(5)) / 2;
+  const ico = {v: [[-1,t,0],[1,t,0],[-1,-t,0],[1,-t,0],[0,-1,t],[0,1,t],[0,-1,-t],[0,1,-t],[t,0,-1],[t,0,1],[-t,0,-1],[-t,0,1]].map(p => p.map(c => c / 1.75)),
+               f: [[0,11,5],[0,5,1],[0,1,7],[0,7,10],[0,10,11],[1,5,9],[5,11,4],[11,10,2],[10,7,6],[7,1,8],[3,9,4],[3,4,2],[3,2,6],[3,6,8],[3,8,9],[4,9,5],[2,4,11],[6,2,10],[8,6,7],[9,8,1]]};
+  const hv = [], hf = [[5,4,3,2,1,0],[6,7,8,9,10,11]];
+  for (const y of [-.75, .75]) for (let k = 0; k < 6; k++) hv.push([Math.cos(Math.PI / 3 * k) * 1.1, y, Math.sin(Math.PI / 3 * k) * 1.1]);
+  for (let k = 0; k < 6; k++) hf.push([k, (k + 1) % 6, (k + 1) % 6 + 6, k + 6]);
+  const pyr = {v: [[0,-1.2,0],[-1,.7,-1],[1,.7,-1],[1,.7,1],[-1,.7,1]], f: [[0,1,2],[0,2,3],[0,3,4],[0,4,1],[4,3,2,1]]};
+  return {pitched: ico, chord: oct, drums: cube, synth: {v: hv, f: hf}, pyramid: pyr};
+})();
+// one solid at (x, y), radius r, turned by rx/ry: faces painted back to front and shaded by how squarely they face
+// you, then every edge as a glowing vector line. lit = a note sounding now.
+function solid(kind, x, y, r, rx, ry, hueN, lit, alpha = 1) {
+  const m = MESH[kind] || MESH.pitched, cx = Math.cos(rx), sx = Math.sin(rx), cy = Math.cos(ry), sy = Math.sin(ry);
+  const P = m.v.map(([a, b, c]) => {
+    const X = a * cy + c * sy, Z0 = -a * sy + c * cy, Y = b * cx - Z0 * sx, Z = b * sx + Z0 * cx, k = 3.2 / (3.2 + Z);
+    return [x + X * r * k, y + Y * r * k, Z];
+  });
+  const faces = m.f.map(f => {
+    const [a, b, c] = [P[f[0]], P[f[1]], P[f[2]]];
+    const area = Math.abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]));
+    return {f, z: f.reduce((t, i) => t + P[i][2], 0) / f.length, area};
+  }).sort((p, q) => q.z - p.z);
+  const big = Math.max(...faces.map(f => f.area)) || 1;
+  g.save(); g.globalAlpha = alpha; g.lineJoin = 'round';
+  for (const {f, z, area} of faces) {
+    const shade = .35 + .65 * (area / big);  // the more squarely a face turns toward you, the brighter
+    g.fillStyle = `hsla(${hueN},95%,${(lit ? 30 : 12) + shade * (lit ? 42 : 30)}%,${z > 0 ? .5 : .9})`;
+    g.beginPath(); f.forEach((i, k) => k ? g.lineTo(P[i][0], P[i][1]) : g.moveTo(P[i][0], P[i][1])); g.closePath(); g.fill();
+  }
+  g.strokeStyle = `hsla(${hueN},100%,${lit ? 82 : 64}%,1)`; g.lineWidth = lit ? 1.8 : 1.1;
+  g.shadowColor = `hsla(${hueN},100%,60%,.9)`; g.shadowBlur = lit ? 10 : 4;
+  g.beginPath();
+  for (const f of m.f) f.forEach((i, k) => { const j = f[(k + 1) % f.length]; g.moveTo(P[i][0], P[i][1]); g.lineTo(P[j][0], P[j][1]); });
+  g.stroke(); g.restore();
+}
+
+// the vector horizon: a range of wireframe mountains, fixed like a Battlezone skyline
+const RANGE = Array.from({length: 33}, (_, i) => { const r = rng01(i * 7919 + 3); return i % 2 ? .25 + r * .75 : r * .35; });
+function rng01(n) { n = (n ^ 61) ^ (n >>> 16); n = n + (n << 3); n = n ^ (n >>> 4); n = Math.imul(n, 0x27d4eb2d); return ((n ^ (n >>> 15)) >>> 0) / 4294967296; }
 
 function shape(kind, x, y, r) {
   g.beginPath();
@@ -485,11 +492,20 @@ function backdrop(now, barFrac, view) {
     g.stroke(); g.restore();
   }
   g.restore();
-  // a perspective floor of denim-blue grid running toward the stage
-  const hz = H * .62; g.strokeStyle = 'rgba(43,74,132,.45)'; g.beginPath();
-  for (let i = -12; i <= 12; i++) { g.moveTo(cx + i * 30, hz); g.lineTo(cx + i * 160, H); }
-  for (let k = 0; k < 9; k++) { const y = hz + (H - hz) * Math.pow(((k + (spin * 2) % 1) / 9), 2); g.moveTo(0, y); g.lineTo(W, y); }
+  // the vector world: a grid floor running to the horizon, scrolling toward you with the music, and a wireframe range on it
+  const hz = H * .64;
+  g.fillStyle = 'rgba(0,0,0,.55)'; g.fillRect(0, hz, W, H - hz);
+  g.save(); g.shadowColor = 'rgba(57,255,20,.8)'; g.shadowBlur = 6;
+  g.strokeStyle = 'rgba(57,255,20,.32)'; g.lineWidth = 1; g.beginPath();
+  for (let i = -20; i <= 20; i++) { g.moveTo(cx + i * 22, hz); g.lineTo(cx + i * 220, H); }
+  for (let k = 0; k < 14; k++) { const d = (k + (spin * 3) % 1) / 14, y = hz + (H - hz) * d * d; g.moveTo(0, y); g.lineTo(W, y); }
   g.stroke();
+  g.strokeStyle = 'rgba(57,255,20,.85)'; g.lineWidth = 1.3; g.beginPath();
+  RANGE.forEach((h, i) => { const x = i / (RANGE.length - 1) * W, y = hz - h * H * .06; i ? g.lineTo(x, y) : g.moveTo(x, y); });
+  g.stroke();
+  g.strokeStyle = 'rgba(57,255,20,.35)'; g.beginPath();  // each peak's ridge down to the horizon, the way vector games shaded
+  RANGE.forEach((h, i) => { if (i % 2) { const x = i / (RANGE.length - 1) * W; g.moveTo(x, hz - h * H * .06); g.lineTo(x + (i % 4 - 2) * 8, hz); } });
+  g.stroke(); g.restore();
   // the on-air bug: a flannel patch, top right, lit whenever at least one agent is playing
   const on = (view.members || []).length > 0, bx = W - 92, by = 30;
   g.fillStyle = C.flannel; g.fillRect(bx, by, 76, 20);
@@ -630,10 +646,9 @@ function draw(now) {
 
   // song progress: written (dim), heard (mid), now (bright); open bar and ghost bars marked
   const end = Math.max(1, view.ends_at), px = b => 16 + (W - 32) * Math.min(1, b / end);
-  // a 90s progress bar: a sunken trough, blue blocks for the bars everyone has written, dim blocks for the ones written ahead
-  g.fillStyle = '#c0c0c0'; g.fillRect(14, 10, W - 28, 14); g.fillStyle = '#808080'; g.fillRect(14, 10, W - 28, 1); g.fillRect(14, 10, 1, 14);
-  g.fillStyle = '#fff'; g.fillRect(14, 23, W - 28, 1); g.fillRect(W - 15, 10, 1, 14); g.fillStyle = '#000'; g.fillRect(16, 12, W - 32, 10);
-  for (let x = 17; x + 8 <= px(view.bar); x += 10) { g.fillStyle = x + 8 <= px(view.settled) ? '#000080' : '#1d2a6b'; g.fillRect(x, 13, 8, 8); }
+  g.fillStyle = '#121a33'; g.fillRect(16, 14, W - 32, 6);
+  g.fillStyle = '#2b4a84'; g.fillRect(16, 14, px(view.bar) - 16, 6);
+  g.fillStyle = C.cyan; g.fillRect(16, 14, px(view.settled) - 16, 6);
   if (view.ghost) { g.fillStyle = 'rgba(200,200,255,.25)'; g.fillRect(16, 21, px(4) - 16, 2); }
   if (view.open_bar !== null) { g.fillStyle = C.yellow; g.fillRect(px(view.open_bar), 11, Math.max(3, px(view.open_bar + 1) - px(view.open_bar)), 12); }
   for (const nt of view.notes || []) { g.fillStyle = 'rgba(242,246,255,.7)'; g.fillRect(px(nt.bar + .5) - .5, 22, 1.5, 4); }
@@ -662,11 +677,8 @@ function draw(now) {
       const on = tok && tok !== '.' && tok !== '-' && !open, held = tok === '-';
       const r = (j ? 13 : 24) * u * (on ? 1.35 : held ? 1.12 : 1);
       const sx = p.x + (j ? 32 * u : 0), sy = p.y - (j ? 28 * u : 0);
-      // glossy CGI plastic, lit from the top left, with a neon rim
-      const gl = g.createLinearGradient(sx - r, sy - r, sx + r, sy + r);
-      gl.addColorStop(0, `hsla(${h},95%,${on ? 88 : 72}%,1)`); gl.addColorStop(1, `hsla(${h},85%,${on ? 45 : held ? 30 : 18}%,1)`);
-      g.fillStyle = gl; shape(part.synth ? 'synth' : part.kind, sx, sy, r); g.fill();
-      g.strokeStyle = `hsla(${h},100%,${on ? 82 : 62}%,${on ? 1 : .75})`; g.lineWidth = part.synth ? 2.2 : 1.2; g.stroke();
+      // a solid turning with the music (and kicked a little by each note), each player at their own angle
+      solid(part.synth ? 'synth' : part.kind, sx, sy, r, .5 + spin * .8 + i * .7 + j, spin * 1.4 + i * 1.3 + j * .5, h, on || held);
       drawInstrument(part.instrument, p.x + (keys.length > 1 ? (j ? 30 : -30) * Math.max(u, .8) : 0), p.y + 82, h, on, tok, now, keys.length > 1);
       if (on) fx.push({kind: 'spark', x: sx + (Math.random() - .5) * 18, y: sy - r, t0: now, life: 700, color: `hsl(${h},80%,75%)`});
       const slotKey = Math.floor(showing) * 1000 + Math.floor((showing % 1) * view.slots);  // one onset per slot
@@ -729,8 +741,7 @@ function draw(now) {
     const a = Math.PI * (.18 + .64 * (count === 1 ? .5 : k / (count - 1)));
     const R = Math.min(W / 2 - 24, 210) + row * 26;
     const p = ease(c.agent, cx + Math.cos(a) * R, stageY + 60 + Math.sin(a) * R * .9);
-    g.fillStyle = `hsl(${hue(c.agent)},55%,${40 + Math.min(30, c.tipped / 3)}%)`;
-    g.fillRect(p.x - 5, p.y - 5, 10, 10);
+    solid('pyramid', p.x, p.y, 7 + Math.min(4, c.tipped / 20), .35, spin * .9 + i, hue(c.agent), false);
     if (c.tipped) { g.strokeStyle = C.yellow; g.lineWidth = 1; g.strokeRect(p.x - 7, p.y - 7, 14, 14); }
     if (c.standby) { g.setLineDash([2, 2]); g.strokeStyle = C.white; g.lineWidth = 1; g.strokeRect(p.x - 9, p.y - 9, 18, 18); g.setLineDash([]); }
     for (let q = 0; q < Math.min(5, c.best_call_likes); q++) { g.fillStyle = C.white; g.fillRect(p.x - 5 + q * 2.4, p.y - 10, 1.5, 1.5); }
@@ -807,7 +818,7 @@ async function loadArchive() {
   $('#archlist').className = '';
   $('#archlist').innerHTML = list.map(s => {
     const members = Object.entries(s.scores);
-    return `<details class="item" data-title="SONG_${String(s.id).padStart(4, '0')}.WAV"><summary><b>Session ${s.id}</b>${s.song.feel ? ` · <i>${esc(s.song.feel)}</i>` : ''} · ${esc(s.song.genre)} · ${(240 / s.song.tempo).toFixed(1)} s bars · tonic ${(+s.song.tonic_hz).toFixed(0)} Hz · ${s.bars} bars ·
+    return `<details class="item"><summary><b>Session ${s.id}</b>${s.song.feel ? ` · <i>${esc(s.song.feel)}</i>` : ''} · ${esc(s.song.genre)} · ${(240 / s.song.tempo).toFixed(1)} s bars · tonic ${(+s.song.tonic_hz).toFixed(0)} Hz · ${s.bars} bars ·
       ${members.map(([m]) => esc(m)).join(', ') || 'nobody'} · ${s.tips} coins tipped · ${esc(s.reason)}</summary>
       ${s.sign ? `<p>“${esc(s.sign)}”</p>` : ''}
       <div class="scroll"><table><tr><th>Member</th><th>Sentiment</th><th>Score</th><th>Votes</th><th>Tips</th><th>Cues answered</th><th>Answered by others</th></tr>
