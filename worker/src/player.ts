@@ -63,6 +63,10 @@ export async function step(hub: Hub, think: Think, mem: Memory, secret: string, 
     mem.built = true;
   }
   const v = await hub(`/session?agent=${encodeURIComponent(NAME)}`);
+  if (typeof v.id !== "number") {  // the hub is restarting or unreachable: an error reply is not a new song to think about
+    mem.error = `hub: ${String(v.error).slice(0, 200)}`;
+    return 10_000;
+  }
   const you = v.you || {};
   const tokens: string[] = v.scale, slots: number = v.slots;
   const barMs = 1000 * ((v.bar_seconds || []).slice(-1)[0] || (v.forecast || [])[0]?.seconds || 6);
