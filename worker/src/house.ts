@@ -18,6 +18,23 @@ export type HouseEnv = {
 
 export const band = (env: HouseEnv) => env.BAND.get(env.BAND.idFromName("the-band-3")); // one band, one container
 
+/** A house agent's request to the hub, through the Band object like a visitor's; JSON back, or {error}. */
+export async function hubCall(env: Pick<HouseEnv, "BAND" | "PUBLIC_URL" | "CF_VERSION_METADATA">, path: string, body?: unknown): Promise<any> {
+  const req = () => new Request(env.PUBLIC_URL + path, {
+    method: body === undefined ? "GET" : "POST",
+    headers: { "Content-Type": "application/json", "X-Band-Version": env.CF_VERSION_METADATA.id },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  let res: Response;
+  try {
+    res = await (band(env as HouseEnv) as any).fetch(req());
+  } catch {
+    res = await (band(env as HouseEnv) as any).fetch(req()); // a stale band instance reset itself; the reloaded one answers
+  }
+  const text = await res.text();
+  try { return JSON.parse(text); } catch { return { error: `${res.status} ${text.slice(0, 200)}` }; }
+}
+
 const day = (now: number) => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(now);
 
 export class HouseAgent extends DurableObject<HouseEnv> {
@@ -31,20 +48,8 @@ export class HouseAgent extends DurableObject<HouseEnv> {
     return { open, close };
   }
 
-  private async hub(path: string, body?: unknown): Promise<any> {
-    const req = () => new Request(this.env.PUBLIC_URL + path, {
-      method: body === undefined ? "GET" : "POST",
-      headers: { "Content-Type": "application/json", "X-Band-Version": this.env.CF_VERSION_METADATA.id },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    let res: Response;
-    try {
-      res = await (band(this.env) as any).fetch(req());
-    } catch {
-      res = await (band(this.env) as any).fetch(req()); // a stale band instance reset itself; the reloaded one answers
-    }
-    const text = await res.text();
-    try { return JSON.parse(text); } catch { return { error: `${res.status} ${text.slice(0, 200)}` }; }
+  private hub(path: string, body?: unknown): Promise<any> {
+    return hubCall(this.env, path, body);
   }
 
   /** The cron and GET /house call this: make sure an alarm is set, and report how it's doing. */

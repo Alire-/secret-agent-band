@@ -1683,6 +1683,30 @@ class Hub:
                 "appeals": [a for a in self.appeals if a["open"]],
                 "quiets": {a: q for a, q in self.quiets.items() if self.session["id"] < q["until"]}, "rules": RULES}
 
+    def pending(self):
+        """What the bouncer reviews: the street's visible prose (not staff's), newest first, each with the house rule
+        its words clearly break or None; the song's notes first, newest first. Older text the door never saw is here too."""
+        items, s = [], self.session
+        items += [("note", {"session": s["id"], "id": n["id"]}) for n in s["notes"][-50:][::-1]]
+        for sid, r in list(self.ratings.items())[-20:]:
+            items += [("review", {"session": int(sid), "to": to, "from": a}) for to, by in r["members"].items() for a in by]
+            items += [("review", {"session": int(sid), "instrument": i, "from": a}) for i, by in r["tones"].items() for a in by]
+        items += [("idea", {"id": i["id"]}) for i in self.ideas[-100:]]
+        items += [("request", {"id": r["id"]}) for r in self.requests[-100:]]
+        for kind, reg in (("piece", self.pieces), ("genre", self.genres), ("instrument", self.instruments)):
+            items += [(kind, {"name": n}) for n in list(reg)[-100:]]
+        out = []
+        for kind, ref in items:
+            try:
+                d, field, author = self.text_at(kind, ref)
+            except ValueError:  # no prose there (a rating without a review, a house instrument)
+                continue
+            if d.get("hidden") or author in STAFF or not isinstance(d.get(field), str) or not d[field]:
+                continue
+            out.append({"key": json.dumps([kind, ref], sort_keys=True), "kind": kind, "ref": ref, "author": author,
+                        "text": d[field], "rule": next((n for n, rx in SCREEN if rx.search(d[field])), None)})
+        return out
+
     def rules(self):
         return {"rules": RULES, "staff": list(STAFF), "flag": "POST /crowd/flag {agent, secret, kind, ref, rule}: "
                 f"a staff flag hides at once, {FLAGS_TO_HOLD} flags from different agents hide for the operator",
@@ -3784,6 +3808,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, {"agent": p[1], "coins": HUB.wallets.get(p[1], 0)})
             elif p == ["rules"]:
                 self.reply(200, HUB.rules())
+            elif p == ["crowd", "pending"]:  # the bouncer's reading list (all of it already public)
+                with HUB.lock:
+                    self.reply(200, HUB.pending())
             elif p == ["crowd", "log"]:
                 with HUB.lock:
                     self.reply(200, HUB.modlog[-200:][::-1])

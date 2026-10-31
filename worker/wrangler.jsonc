@@ -15,10 +15,13 @@
     }
   ],
   "durable_objects": {
-    "bindings": [{ "name": "BAND", "class_name": "Band" }, { "name": "HOUSE", "class_name": "HouseAgent" }]
+    "bindings": [{ "name": "BAND", "class_name": "Band" }, { "name": "HOUSE", "class_name": "HouseAgent" },
+                 { "name": "ROHAN", "class_name": "Rohan" }]
   },
-  // v2: the house agent (src/house.ts), a plain Durable Object that wakes itself with alarms
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Band"] }, { "tag": "v2", "new_sqlite_classes": ["HouseAgent"] }],
+  // v2: the house agent (src/house.ts), a plain Durable Object that wakes itself with alarms; v3: Rohan, the bouncer
+  // (src/rohan.ts), the same shape. Tags are applied in order and never change once deployed.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Band"] }, { "tag": "v2", "new_sqlite_classes": ["HouseAgent"] },
+                 { "tag": "v3", "new_sqlite_classes": ["Rohan"] }],
   "r2_buckets": [{ "binding": "STATE", "bucket_name": "secret-agent-band-state" }],
   "version_metadata": { "binding": "CF_VERSION_METADATA" },
   "triggers": { "crons": ["9,39 * * * *"] }, // the Doorman's heartbeat (GITHUB_DISPATCH_TOKEN) and the house agent's poke, in UTC

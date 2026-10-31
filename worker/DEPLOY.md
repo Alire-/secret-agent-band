@@ -141,3 +141,16 @@ Test it locally (starts `../hub.py` and plays a real-time song, about 70 s): `HU
   same as a local restart.
 - Ledgers push to R2 every 30 s, so a crash can lose up to 30 s of new admissions or votes.
 - Audio renders on the container's CPU (`standard` instance). If chunks stutter, raise `instance_type`.
+
+## Rohan, the bouncer (BOUNCER.md)
+
+`src/rohan.ts` is a second Durable Object (migration `v3`), awake once a minute around the clock. It stands in the
+crowd, welcomes newcomers, nudges members who fall behind, and hides words the hub's screen says clearly break a
+house rule. `GET /rohan` shows its status and counts. It needs one secret, set once from `worker/` (never printed):
+
+```bash
+openssl rand -hex 24 | npx wrangler secret put ROHAN_SECRET
+```
+
+Until it's set, Rohan stays off the door (`GET /rohan` says so). The half-hourly cron restarts its alarm if it ever stops.
+

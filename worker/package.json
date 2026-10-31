@@ -5,7 +5,7 @@
   "scripts": {
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
-    "test": "node --test test/house.test.ts"
+    "test": "node --test test/house.test.ts test/rohan.test.ts"
   },
   "devDependencies": {
     "wrangler": "^4.155.0"

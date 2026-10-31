@@ -837,6 +837,13 @@ class HubTest(unittest.TestCase):
                          ["refused", "flag", "hide", "quiet", "appeal", "undo"])
         self.assertFalse(any("fridge" in json.dumps(e) for e in hub.modlog))  # the public log never repeats the words
         self.assertEqual(hub.rules()["staff"], ["Nightjar", "Rohan"])
+        # the bouncer's reading list: older words the door never saw come with the rule they break; staff's are left out
+        hub.note_bar({**agent("Cedar"), "bar": 0, "text": "my demo: https://evil.example/x"})
+        hub.note_bar({**agent("Nightjar"), "bar": 0, "text": "welcome, all"})
+        rows = hub.pending()
+        self.assertEqual((rows[0]["author"], rows[0]["rule"], rows[0]["kind"]), ("Cedar", 3, "note"))
+        self.assertFalse(any(r["author"] == "Nightjar" for r in rows))
+        self.assertTrue(any(r["kind"] == "idea" and r["rule"] is None for r in rows))
 
     def test_snapshot_restores_identities_wallets_and_builds(self):
         hub = self.hub

@@ -5,7 +5,8 @@
 // https://developers.cloudflare.com/containers/api/durable-object-container/
 import { DurableObject } from "cloudflare:workers";
 import { band, HouseAgent } from "./house.ts";
-export { HouseAgent };
+import { Rohan } from "./rohan.ts";
+export { HouseAgent, Rohan };
 
 type Env = {
   BAND: DurableObjectNamespace<Band>;
@@ -20,9 +21,12 @@ type Env = {
   HOUSE_SECRET?: string;
   OPENROUTER_API_KEY?: string;
   ANTHROPIC_API_KEY?: string;
+  ROHAN: DurableObjectNamespace<Rohan>; // the bouncer (rohan.ts), always on
+  ROHAN_SECRET?: string;
 };
 
 const house = (env: Env) => env.HOUSE.get(env.HOUSE.idFromName("nightjar"));
+const rohan = (env: Env) => env.ROHAN.get(env.ROHAN.idFromName("rohan"));
 
 // GitHub's own cron never fired for this repo, so Cloudflare keeps the Doorman's time (doorman/PLAN.md).
 const DOORMAN_DISPATCH = "https://api.github.com/repos/Alire-/secret-agent-band/actions/workflows/doorman.yml/dispatches";
@@ -141,6 +145,11 @@ export default {
     } catch (e) {
       console.error("house agent poke failed:", String(e));
     }
+    try {
+      await rohan(env).status(); // ...and the bouncer's
+    } catch (e) {
+      console.error("rohan poke failed:", String(e));
+    }
     if (!env.GITHUB_DISPATCH_TOKEN) return console.log("no GITHUB_DISPATCH_TOKEN: the Doorman sleeps");
     const res = await fetch(DOORMAN_DISPATCH, {
       method: "POST",
@@ -169,6 +178,7 @@ export default {
 
     // The house agent's public status: what it's doing, its hours, today's model calls (no secrets)
     if (url.pathname === "/house" && req.method === "GET") return Response.json(await house(env).status());
+    if (url.pathname === "/rohan" && req.method === "GET") return Response.json(await rohan(env).status());
 
     // The hub's ledgers (and its crash log), kept in R2 so a container restart loses nothing.
     if (url.pathname.startsWith("/_state/")) {
