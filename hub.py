@@ -21,6 +21,7 @@ FRONT_GAIN, BACK_GAIN = 1.25, .9  # a member standing front is heard over the re
 RACK_MAX = 48        # agent-built instruments in circulation; one more retires the lowest-rated to the museum
 COPIES = (1, 5, 2)   # copies of an instrument: fewest, most, default
 RENT_DEFAULT = 2     # coins a song a maker's copies rent for until they set their own price (rent_out)
+GENRE_CHANGE = .7    # each new song starts in a fresh key and, this often, a different genre (unless its leader queued one)
 REAL_TIME = True     # the band can't run ahead of real time: bars are written at most AHEAD past the bar sounding now
 HOUSE_COPIES = 3     # copies of each house instrument the street lends free to whoever is on stage (the voice: unlimited)
 PLAYED_COINS = 2     # house coins to an instrument's maker for each song someone else plays it in
@@ -130,7 +131,8 @@ TURNOVER When the song ends, a member is cut if their crowd SENTIMENT <= 0 AND a
         House bonus: most-answered +{bonus}; open-bar call +{feature}; steadiest member (lowest avg delay_ms) +{steady};
         most novel instrument +{novel}. The first bar you write in a song is startup, not delay.
 
-SONG    Count-in: for {countin}s after a song starts only the leader plays, so they can set it first.
+SONG    Every new song starts in a fresh key and, 7 times in 10, a different genre (read "scale" again), unless its
+        leader queued one with POST /session/next. Count-in: for {countin}s after a song starts only the leader plays, so they can set it first.
         Leader sets, before bar 0: POST /session/song {genre, tonic, tempo, bars} (bars may grow later; sign any
         time). Any member can queue the next song for when they lead: POST /session/next {genre, tonic, tempo, bars};
         the leader sending it before bar 0 sets this song. "you".next_genre shows the likely next tokens and slots.
@@ -1305,6 +1307,13 @@ class Hub:
     def new_session(self, song, leader, sign):
         now, song, prev = time.time(), dict(song), self.session or (self.archive[-1] if self.archive else None)
         queued = self.band.get(leader, {}).pop("next_song", None)
+        if self.session and not queued:  # every song is a new song: a fresh key, and most often a new genre
+            others = [g for g in self.genres if g != song["genre"]]
+            if others and random.random() < GENRE_CHANGE:
+                song["genre"] = random.choice(others)
+            if GENRE_CHANGE:
+                t = random.choice(list(TONICS))
+                song["tonic"], song["tonic_hz"] = t, 220 * 2 ** (TONICS[t] / 12)
         song["feel"] = None  # pace is the band's feeling, never a dice roll: until the leader names one, the last pace holds
         song["piece"] = song["take"] = None  # a piece is played once unless the next leader picks it again
         if queued:  # the new leader's queued song

@@ -1,7 +1,7 @@
 // The house agent's loop, one step per wake-up: keep business hours, get in once, take a seat, lead when it's
 // its turn, write the bars it may write, and ask the brain for a new intent every couple of minutes.
 // It talks to the hub only through the public API, like any other agent. No Cloudflare imports, so node can test it.
-import { DEFAULT_INTENT, type Intent, isOpen, nextOpen, play, usable } from "./improviser.ts";
+import { DEFAULT_INTENT, type Intent, isOpen, nextOpen, play, rng, usable } from "./improviser.ts";
 
 export const NAME = "Nightjar";
 export const INSTRUMENT = "nightjar churr";
@@ -17,12 +17,34 @@ const IDEA = "Posted house hours: /how and /beat say when a house player is on s
 export const THINK_MS = 120_000; // a new intent from the brain this often, and at each song's start
 const THINK_MIN_MS = 45_000; // ...but never sooner than this: short songs mustn't multiply the calls
 const MAX_BARS = 2; // bars per play: enough to stay ahead, little enough to keep listening
+const SONG_BARS = 32; // when it leads: a song long enough to settle into (a few minutes in real time)
+export const GENRE_CHANGE = 0.7; // when it leads: the chance the new song is in a different genre
+export const SWITCH_CHANCE = 0.1; // each song: the chance it picks up another instrument it can play
+export const MINT_CHANCE = 0.03; // ...and the chance it builds a new one of its own (it keeps at most MINT_MAX)
+const MINT_MAX = 5;
+const TONICS = ["A", "Bb", "B", "C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab"];
+const WORDS = ["moth", "ember", "reed", "frost", "tide", "lantern", "static", "hollow", "wire", "dusk", "owl", "rust"];
+
+// a new voice of its own, from a seed: a handful of inharmonic partials, an envelope, a little drift and room
+export function mintSpec(seed: number, taken: string[]): Record<string, unknown> {
+  const r = rng(seed), n = 3 + Math.floor(r() * 4);
+  const partials = [[1, 1], ...Array.from({ length: n - 1 }, (_, i) => [Math.round((1 + r() * 7) * 100) / 100, Math.round(0.6 / (i + 1.5) * 100) / 100])];
+  let name = "";
+  for (let k = 0; !name || taken.includes(name); k++) name = `nightjar ${WORDS[Math.floor(r() * WORDS.length)]}${k ? " " + k : ""}`;
+  return { name, copies: 2, about: "minted by the house player on a whim between songs", partials,
+           attack: Math.round((0.01 + r() * 1.4) * 100) / 100, decay: Math.round((0.3 + r() * 5) * 10) / 10,
+           vibrato: r() < 0.5 ? [Math.round(r() * 8 * 10) / 10, Math.round(r() * 30)] : [0, 0],
+           drift: Math.round(r() * 40), space: Math.round(r() * 0.7 * 100) / 100, octave: Math.floor(r() * 3) - 1 };
+}
 
 export type Hub = (path: string, body?: unknown) => Promise<any>;
 export type Think = (view: any, intent: Intent, memory: Memory) => Promise<Intent | null>;
 export type Memory = {
   admitted: boolean;
   built: boolean;
+  instrument: string; // what it plays now
+  minted: string[]; // instruments it built beyond its first
+  song_seen: number; // the last song it rolled the dice for
   intent: Intent;
   thought_at: number; // when the brain last set the intent
   thought_song: number; // the song it was thinking about
@@ -35,7 +57,7 @@ export type Memory = {
 };
 
 export const freshMemory = (): Memory => ({
-  admitted: false, built: false, intent: { ...DEFAULT_INTENT }, thought_at: 0, thought_song: -1, led: [], cued: [],
+  admitted: false, built: false, instrument: INSTRUMENT, minted: [], song_seen: -1, intent: { ...DEFAULT_INTENT }, thought_at: 0, thought_song: -1, led: [], cued: [],
   answered: [], seed: 1, status: "waking", error: null,
 });
 
@@ -84,16 +106,43 @@ export async function step(hub: Hub, think: Think, mem: Memory, secret: string, 
 
   if (!you.member) {
     if (v.open_seats > 0) {
-      await hub("/session/join", { ...me, instruments: [INSTRUMENT], stance: intent.stance, front: intent.front });
+      await hub("/session/join", { ...me, instruments: [mem.instrument || INSTRUMENT], stance: intent.stance, front: intent.front });
       mem.status = "seated";
     } else mem.status = "waiting for a seat";
     return Math.min(barMs, 10_000);
   }
   mem.status = "playing";
   const leader = v.leader === NAME;
-  if (leader && !mem.led.includes(v.id) && v.bar === 0) {  // its turn to lead: name the song's feel and pace
-    await hub("/session/song", { ...me, ...(intent.feel ? { feel: intent.feel } : {}), ...(intent.bar_s ? { bar_s: intent.bar_s } : {}) });
+  if (v.id !== mem.song_seen && v.bar === 0) {  // a new song: now and then a different instrument, rarely a new one
+    mem.song_seen = v.id;
+    mem.seed = (mem.seed * 1103515245 + 12345) >>> 0;
+    const r = rng(mem.seed), roll = r();
+    let pick: string | null = null;
+    if (roll < MINT_CHANCE && mem.minted.length < MINT_MAX) {
+      const all = ((await hub("/instruments")) as any[]).map((i) => i.name);
+      const made = await hub("/instrument", { ...me, ...mintSpec(mem.seed, all) });
+      if (!made.error) { pick = made.name; mem.minted = [...mem.minted, made.name]; }
+    } else if (roll < MINT_CHANCE + SWITCH_CHANCE) {
+      // anything it can play without asking: house instruments with a copy free, the voice, its own
+      const ok = ((await hub("/instruments")) as any[]).filter((i) => !i.retired && i.name !== mem.instrument &&
+        (i.creator === "street" || i.creator === NAME) && !i.hits);
+      if (ok.length) pick = ok[Math.floor(r() * ok.length)].name;
+    }
+    if (pick) {
+      const j = await hub("/session/join", { ...me, instruments: [pick] });
+      if (!j.error) mem.instrument = pick;
+    }
+  }
+  if (leader && !mem.led.includes(v.id) && v.bar === 0) {  // its turn to lead: a new song, most often a new genre
+    mem.seed = (mem.seed * 1103515245 + 12345) >>> 0;
+    const r = rng(mem.seed);
+    const genres = ((await hub("/genres")) as any[]).map((g) => g.name).filter((g) => g !== v.song?.genre);
+    const genre = genres.length && r() < GENRE_CHANGE ? genres[Math.floor(r() * genres.length)] : undefined;
+    await hub("/session/song", { ...me, bars: SONG_BARS, tonic: TONICS[Math.floor(r() * TONICS.length)],
+                                 ...(genre ? { genre } : {}), ...(intent.feel ? { feel: intent.feel } : {}),
+                                 ...(intent.bar_s ? { bar_s: intent.bar_s } : {}) });
     mem.led = [...mem.led.slice(-20), v.id];
+    if (genre) return 500; // new tokens: read the song again before writing a bar
   }
   const mine = v.members.find((m: any) => m.agent === NAME);
   if (mine && (mine.stance !== intent.stance || mine.front !== intent.front)) {

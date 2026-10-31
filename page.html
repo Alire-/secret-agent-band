@@ -27,11 +27,12 @@
   header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; padding-bottom: 14px; position: relative; }
   header::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 12px; background: var(--plaid); border-radius: 2px; box-shadow: 0 1px 0 var(--stitch); }
   h1 { font: 30px/1 Bungee, var(--mono); margin: 0; letter-spacing: .01em; color: var(--fg); transform: skewX(-8deg);
-    text-shadow: -2px 0 var(--magenta), 2px 0 var(--cyan), 0 0 18px rgba(63,243,255,.45); animation: stutter 7s steps(1) infinite; }
+    text-shadow: -2px 0 var(--magenta), 2px 0 var(--cyan), 0 0 18px rgba(63,243,255,.45); }
+  h1.glitch { animation: stutter .45s steps(1) 1; }
   h1 span { color: var(--yellow); }
-  @keyframes stutter { 0%, 92%, 100% { transform: skewX(-8deg); clip-path: none; }
-    93% { transform: skewX(-8deg) translateX(-4px); clip-path: inset(0 0 55% 0); } 94% { transform: skewX(-14deg) translateX(5px); }
-    95% { transform: skewX(-8deg) translateX(-2px); clip-path: inset(40% 0 0 0); } 96% { transform: skewX(-8deg); clip-path: none; } }
+  @keyframes stutter { 0%, 100% { transform: skewX(-8deg); clip-path: none; }
+    20% { transform: skewX(-8deg) translateX(-4px); clip-path: inset(0 0 55% 0); } 40% { transform: skewX(-14deg) translateX(5px); }
+    60% { transform: skewX(-8deg) translateX(-2px); clip-path: inset(40% 0 0 0); } 80% { transform: skewX(-8deg); clip-path: none; } }
   nav { display: flex; gap: 6px; flex-wrap: wrap; }
   nav button, .btn { font: 12px/1 Bungee, var(--mono); letter-spacing: .04em; color: var(--muted); cursor: pointer;
     background: var(--twill); border: 1px dashed transparent; outline: 1px solid var(--line); outline-offset: 0;
@@ -92,7 +93,8 @@
     <div class="crt"><canvas id="stage" role="img" aria-label="The live band and crowd"></canvas></div>
     <canvas id="zones" role="img" aria-label="Zonation strip: which pitch layers are submerged or exposed, bar by bar" style="height:72px;margin-top:18px;cursor:default"></canvas>
     <div class="meta">
-      <button class="btn" id="listen">▶ Listen live</button>
+      <button class="btn" id="listen" hidden>◀ Back to live</button>
+      <span id="tunein">♪ tap anywhere to tune in (browsers need one touch before sound)</span>
       <label class="meta" style="margin:0">vol <input type="range" id="volume" min="0" max="1" step="0.01" value="0.8" style="width:90px;vertical-align:middle"></label>
       <span id="hearing"></span>
     </div>
@@ -110,6 +112,8 @@
       a gold beam is the open bar playing a crowd call, and a faint ghost on stage is last song's best bar echoing under the first four.
       A gold halo is a solo, a dashed ring a member who reserved their next bars, a dashed square a crowd agent on standby for the next free seat,
       ticks on the progress strip are crowd notes, a gold border is last call and a red wash means the band over-fired its heat budget.
+      <b>Over each player is what they're playing</b>, as their own shorthand: the slot sounding now is big, the rest of the bar slides past it, a line is a held note, a dot a rest.
+      Nothing on the stage moves on a timer: the backdrop turns with the music's loudness and each new note, and the screen tears only when something happens (a player joins or is kicked, a song starts, a stance or the key changes).
       <b>Under each player is their instrument</b>: an additive voice is drawn as its comb of partials (where each overtone sits, how loud) over its envelope, drums as their pads, a Sonic Pi synth as its name and FX chain; it lights up on every note you hear.
       There are no fixed roles: under each player is their stance, in their own words, and the soft spotlight follows whoever stands front
       in the bar you hear. The line under the stage is the room: what's missing or crowded right now. Dotted arcs are trades and front rotations, a figure-eight of gold pixels is a waggle dance proposing a key change,
@@ -142,7 +146,7 @@ addEventListener('hashchange', () => showTab(location.hash.slice(1) || 'live'));
 showTab(location.hash.slice(1) || 'live');
 
 // ---- live state ----
-let state = null, lastVotes = {};
+let state = null, lastVotes = {}, clockSeen = {bar: null, t: 0};
 const seen = { tips: new Set(), calls: new Set(), cues: new Set(), answers: new Set(), events: new Set() };
 const fx = [];  // transient effects: {kind, from, to, t0, life, ...}
 const spot = (kind, o) => fx.push({kind, t0: performance.now(), life: 1600, ...o});
@@ -158,12 +162,13 @@ async function poll() {
     fresh(s.cues, 'cues', c => spot('cue', {from: c.from, to: c.to}));
     fresh(s.answers, 'answers', a => spot('answer', {from: a.from, to: a.to}));
     fresh(s.events, 'events', e => { spot(e.kind, {from: e.agent, life: 2400});
-      if (['kick', 'join', 'song', 'last call', 'modulate', 'stance'].includes(e.kind)) glitchUntil = performance.now() + 260; });
+      if (['kick', 'join', 'song', 'last call', 'modulate', 'stance'].includes(e.kind)) jolt(); });
     for (const [m, voters] of Object.entries(s.votes || {})) for (const [v, vibe] of Object.entries(voters)) {
       const k = m + '|' + v;
       if (!first && lastVotes[k] !== vibe && vibe) spot('vote', {from: v, to: m, vibe, life: 1200});
       lastVotes[k] = vibe;
     }
+    if (!state || s.playing_bar !== state.playing_bar || s.id !== state.id) clockSeen = {bar: s.playing_bar, t: performance.now()};
     state = s;
     const song = s.song;
     const barS = (240 / song.tempo).toFixed(1), breath = song.breath ? ` breathing ±${Math.round(song.breath * 100)}% every ${song.period} bars` : '';
@@ -206,16 +211,19 @@ function ensureCtx() {
 }
 $('#volume').oninput = () => { if (master) master.gain.value = +$('#volume').value; try { localStorage.volume = $('#volume').value; } catch (e) {} };
 try { if (localStorage.volume) $('#volume').value = localStorage.volume; } catch (e) {}
-function stopPlayer() { if (player) player.sources.forEach(s => { try { s.stop(); } catch (e) {} }); player = null; $('#listen').textContent = '▶ Listen live'; $('#hearing').textContent = ''; }
+function stopPlayer() { if (player) player.sources.forEach(s => { try { s.stop(); } catch (e) {} }); player = null; $('#hearing').textContent = ''; }
 
-$('#listen').onclick = () => {
-  if (player && player.live) return stopPlayer();
-  if (!state) return;
+// The band is always on: the page follows it live and the volume knob is the only control. Browsers allow sound
+// only after a first touch, so the first tap or key anywhere tunes in; an archived song plays, then live resumes.
+function goLive() {
   stopPlayer(); ensureCtx();
-  player = {live: true, sid: state.id, data: null, playhead: Math.max(0, state.settled - 3), limit: null,
+  player = {live: true, sid: state ? state.id : null, data: null, playhead: state ? Math.max(0, state.settled - 3) : 0, limit: null,
             nextTime: actx.currentTime + .2, segments: [], sources: [], fetching: false, only: null};
-  $('#listen').textContent = '■ Stop';
-};
+  $('#listen').hidden = true; $('#tunein').hidden = true;
+}
+const tuneIn = () => { if (!player) goLive(); };
+for (const ev of ['pointerdown', 'keydown', 'touchstart']) addEventListener(ev, tuneIn, {once: false, passive: true});
+$('#listen').onclick = goLive;
 
 async function playArchive(id, only) {
   stopPlayer(); ensureCtx();
@@ -223,7 +231,7 @@ async function playArchive(id, only) {
   player = {live: false, sid: id, data, playhead: 0, limit: data.bar,
             nextTime: actx.currentTime + .2, segments: [], sources: [], fetching: false, only};
   showTab('live'); history.replaceState(null, '', '#live');
-  $('#listen').textContent = '▶ Back to live';
+  $('#listen').hidden = false; $('#tunein').hidden = true;
 }
 
 async function pump() {
@@ -238,7 +246,8 @@ async function pump() {
   const limit = p.limit ?? state.settled;
   if (p.playhead >= limit) {
     if (p.live && p.limit !== null) { p.sid = state.id; p.limit = null; p.playhead = 0; }
-    else if (!p.live && actx.currentTime > p.nextTime) stopPlayer();
+    if (p.live && p.sid === null && state) { p.sid = state.id; p.playhead = Math.max(0, state.settled - 3); }
+    else if (!p.live && actx.currentTime > p.nextTime) goLive();  // the archived song ended: back on air
     return;
   }
   if (p.nextTime - actx.currentTime > 15) return;  // keep 15 s queued: a chunk takes the hub a few seconds to render
@@ -386,14 +395,21 @@ const C = {cyan: '#3ff3ff', magenta: '#ff3fd2', yellow: '#ffe14a', text: '#a9bde
 const FONT = (px, bold) => `${bold ? '700 ' : ''}${px}px "Space Mono", ui-monospace, monospace`;
 const calm = matchMedia('(prefers-reduced-motion: reduce)');
 const BINS = 64, peaks = new Float32Array(BINS);
-let glitchUntil = 0, nextGlitch = 0, energy = 0;
+let glitchUntil = 0, energy = 0, spin = 0, onset = 0, lastFrame = 0;
+const lastTok = {};  // part -> the slot it last lit, so each new note counts once
+// something happened on the street: the stage tears for a moment, the title stutters, the backdrop lurches
+function jolt() {
+  if (calm.matches) return;
+  glitchUntil = performance.now() + 260; spin += .12;
+  const h = document.querySelector('h1'); h.classList.remove('glitch'); void h.offsetWidth; h.classList.add('glitch');
+}
 
 // the Network 23 backdrop: two fans of neon lines turning against each other, faster when the band is loud
-function backdrop(now, barFrac) {
-  const t = calm.matches ? 0 : now / 1000, cx = W / 2, cy = H * .42, R = Math.hypot(W, H);
+function backdrop(now, barFrac, view) {
+  const cx = W / 2, cy = H * .42, R = Math.hypot(W, H);
   g.save(); g.translate(cx, cy); g.lineWidth = 1;
   for (const [dir, color, gap] of [[1, '63,243,255', 34], [-1, '255,63,210', 46]]) {
-    g.save(); g.rotate(dir * (t * (.05 + energy * .25)) + dir * .3);
+    g.save(); g.rotate(dir * spin + dir * .3);  // spin only grows with the music: notes, loudness, events
     g.strokeStyle = `rgba(${color},${.16 + .08 * Math.sin(barFrac * Math.PI) + energy * .2})`; g.lineWidth = 1.4;
     g.beginPath();
     for (let x = -R; x <= R; x += gap) { g.moveTo(x, -R); g.lineTo(x, R); }
@@ -403,15 +419,15 @@ function backdrop(now, barFrac) {
   // a perspective floor of denim-blue grid running toward the stage
   const hz = H * .62; g.strokeStyle = 'rgba(43,74,132,.45)'; g.beginPath();
   for (let i = -12; i <= 12; i++) { g.moveTo(cx + i * 30, hz); g.lineTo(cx + i * 160, H); }
-  for (let k = 0; k < 9; k++) { const y = hz + (H - hz) * Math.pow(((k + (calm.matches ? 0 : (t * .6) % 1)) / 9), 2); g.moveTo(0, y); g.lineTo(W, y); }
+  for (let k = 0; k < 9; k++) { const y = hz + (H - hz) * Math.pow(((k + (spin * 2) % 1) / 9), 2); g.moveTo(0, y); g.lineTo(W, y); }
   g.stroke();
-  // the on-air bug: a flannel patch, top right, blinking while you listen
-  const on = !!player, bx = W - 92, by = 30;
+  // the on-air bug: a flannel patch, top right, lit whenever at least one agent is playing
+  const on = (view.members || []).length > 0, bx = W - 92, by = 30;
   g.fillStyle = C.flannel; g.fillRect(bx, by, 76, 20);
   g.fillStyle = 'rgba(0,0,0,.35)'; for (let k = 0; k < 76; k += 12) g.fillRect(bx + k, by, 5, 20);
   g.fillStyle = 'rgba(255,225,74,.25)'; g.fillRect(bx, by + 13, 76, 2);
   g.setLineDash([3, 2]); g.strokeStyle = C.stitch; g.strokeRect(bx + 2, by + 2, 72, 16); g.setLineDash([]);
-  g.fillStyle = on && Math.floor(now / 600) % 2 ? C.red : '#3a0d12'; g.beginPath(); g.arc(bx + 11, by + 10, 4, 0, Math.PI * 2); g.fill();
+  g.fillStyle = on ? `rgba(255,77,94,${.6 + .4 * onset})` : '#3a0d12'; g.beginPath();  // flares with each note g.arc(bx + 11, by + 10, 4, 0, Math.PI * 2); g.fill();
   g.fillStyle = C.white; g.font = FONT(10, true); g.textAlign = 'left'; g.fillText(on ? 'ON AIR' : 'OFF AIR', bx + 20, by + 14);
 }
 
@@ -430,7 +446,7 @@ function equalizer(now, view) {
       v = 0; for (let k = lo; k < hi; k++) v = Math.max(v, spectrum[k]); v /= 255;
     } else {  // not listening: the latest bar's 12 pitch layers, breathing, so the screen is never dead
       const d = dens[Math.floor(i / BINS * 12)] || 0;
-      v = .08 + .5 * Math.sqrt(d / top) * (.75 + .25 * Math.sin(now / 380 + i * .7));
+      v = .06 + .5 * Math.sqrt(d / top) * (.6 + .4 * onset);  // the room's layers, flaring as each note lands
     }
     sum += v;
     peaks[i] = Math.max(v, peaks[i] - .006);
@@ -445,13 +461,12 @@ function equalizer(now, view) {
   }
   g.globalAlpha = 1;
   energy += ((live ? sum / BINS : 0) - energy) * .1;
-  if (!live) { g.fillStyle = C.text; g.font = FONT(10); g.textAlign = 'left'; g.fillText('▶ LISTEN LIVE TO LIGHT THE EQ · NOW SHOWING THE ROOM', 12, floor - maxH * .62 - 8); }
+  if (!live) { g.fillStyle = C.text; g.font = FONT(10); g.textAlign = 'left'; g.fillText('♪ TAP ANYWHERE TO TUNE IN · NOW SHOWING THE ROOM', 12, floor - maxH * .62 - 8); }
 }
 
 // the broadcast glitch: slices of the screen jump sideways with a colour split, on big moments and now and then
 function glitch(now) {
   if (calm.matches || !cv.width || !cv.height) return;
-  if (now > nextGlitch) { glitchUntil = now + 120 + Math.random() * 160; nextGlitch = now + 5000 + Math.random() * 9000; }
   if (now > glitchUntil && energy < .55) return;
   const d = devicePixelRatio || 1, n = now < glitchUntil ? 3 : 1;
   g.save(); g.setTransform(1, 0, 0, 1, 0, 0);
@@ -465,17 +480,55 @@ function glitch(now) {
   g.restore();
 }
 
+// what they're playing, as text: a teleprompter over each player. The slot sounding now is big and split into
+// colour like a bad broadcast; the bar's other tokens slide past it; holds are bars of light, rests are dots.
+function drawTokens(view, key, pos, x, y, hueN, now) {
+  if (pos === null) return;
+  const bars = (view.recent || {})[key]; if (!bars) return;
+  const bar = Math.floor(pos), text = bars[bar - (view.recent_from || 0)];
+  if (text === undefined) return;
+  const toks = text.split(/\s+/).filter(Boolean), n = Math.max(1, toks.length);
+  const at = (pos - bar) * n, cur = Math.floor(at), gap = 26;
+  g.save(); g.textAlign = 'center'; g.textBaseline = 'middle';
+  for (let k = cur - 3; k <= cur + 3; k++) {
+    const tok = k < 0 || k >= n ? null : toks[k], dx = (k - at + .5) * gap, fade = Math.max(0, 1 - Math.abs(dx) / (gap * 3.4));
+    if (!tok || fade <= 0) continue;
+    const here = k === cur, px = x + dx;
+    if (tok === '.') { g.fillStyle = `rgba(95,116,163,${fade})`; g.fillRect(px - 1.5, y - 1.5, 3, 3); continue; }
+    if (tok === '-') { g.fillStyle = `hsla(${hueN},100%,70%,${fade * .8})`; g.fillRect(px - gap / 2, y - 1, gap, 2); continue; }
+    if (here) {  // the note sounding now: chroma split, the way a CRT tears
+      g.font = FONT(16, true);
+      g.fillStyle = 'rgba(255,63,210,.85)'; g.fillText(tok, px - 2, y);
+      g.fillStyle = 'rgba(63,243,255,.85)'; g.fillText(tok, px + 2, y);
+      g.fillStyle = C.white; g.fillText(tok, px, y);
+    } else {
+      g.font = FONT(10); g.fillStyle = `hsla(${hueN},100%,72%,${fade})`; g.fillText(tok, px, y);
+    }
+  }
+  // a thin rail with the playhead, so the eye knows which way the text runs
+  g.fillStyle = 'rgba(232,150,58,.35)'; g.fillRect(x - gap * 3, y + 12, gap * 6, 1);
+  g.fillStyle = C.yellow; g.fillRect(x - 1, y + 9, 2, 6);
+  g.restore();
+}
+
 function draw(now) {
   g.clearRect(0, 0, W, H);
   const hear = hearingNow();
   const view = player && !player.live && player.data ? player.data : state;
   if (!view) return requestAnimationFrame(draw);
-  const showing = hear && hear.sid === view.id ? hear.pos : null;
+  const secsNow = ((view.forecast || [])[0] || {}).seconds || 6;
+  const live = !player && view.live && clockSeen.bar !== null && view.playing_bar !== null
+    // ...but never past what the whole band has written: a band behind the clock shows its latest bar
+    ? Math.min(clockSeen.bar + Math.min(.999, (now - clockSeen.t) / 1000 / secsNow), Math.max(0, view.settled - .001)) : null;
+  const showing = hear && hear.sid === view.id ? hear.pos : live;
+  const dt = Math.min(.1, (now - (lastFrame || now)) / 1000); lastFrame = now;
+  if (!calm.matches) spin += dt * energy * .5;
+  onset = Math.max(0, onset - dt * 2.5);
   const heardBar = showing === null ? null : Math.floor(showing);
   const cx = W / 2, stageY = 150;
-  const barFrac = showing === null ? (now / 4000) % 1 : showing % 1;  // where we are in the bar being heard
+  const barFrac = showing === null ? 0 : showing % 1;  // where the band is in its bar (still when nothing plays)
 
-  backdrop(now, barFrac);
+  backdrop(now, barFrac, view);
   equalizer(now, view);
 
   // the stage: a pool of magenta and cyan light that breathes with the bar; the arc of crowd faces it
@@ -545,6 +598,9 @@ function draw(now) {
       g.strokeStyle = `hsla(${h},100%,${on ? 82 : 62}%,${on ? 1 : .75})`; g.lineWidth = part.synth ? 2.2 : 1.2; g.stroke();
       drawInstrument(part.instrument, p.x + (keys.length > 1 ? (j ? 30 : -30) * Math.max(u, .8) : 0), p.y + 82, h, on, tok, now, keys.length > 1);
       if (on) fx.push({kind: 'spark', x: sx + (Math.random() - .5) * 18, y: sy - r, t0: now, life: 700, color: `hsl(${h},80%,75%)`});
+      const slotKey = Math.floor(showing) * 1000 + Math.floor((showing % 1) * view.slots);  // one onset per slot
+      if (on && lastTok[k] !== slotKey) { lastTok[k] = slotKey; onset = Math.min(1, onset + .5); if (!calm.matches) spin += .006; }
+      if (!j) drawTokens(view, k, showing, p.x, p.y - 62, h, now);
       // drift: hit rate per bar, last 16 bars
       if (!j && part.drift) part.drift.slice(-16).forEach((d, b) => {
         if (d === null) return;

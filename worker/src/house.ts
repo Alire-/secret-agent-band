@@ -21,6 +21,11 @@ export const band = (env: HouseEnv) => env.BAND.get(env.BAND.idFromName("the-ban
 const day = (now: number) => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(now);
 
 export class HouseAgent extends DurableObject<HouseEnv> {
+  // the brain runs beside the hands: a model call can take many seconds, and the bars can't wait for it
+  private thinking: Promise<void> | null = null;
+  private ready: { intent: any; error: string | null } | null = null;
+  private usage: Usage | null = null;
+
   private hours() {
     const [open, close] = (this.env.HOUSE_HOURS || "17-1").split("-").map(Number);
     return { open, close };
@@ -56,19 +61,31 @@ export class HouseAgent extends DurableObject<HouseEnv> {
   async alarm(): Promise<void> {
     const now = Date.now();
     const mem = (await this.ctx.storage.get<Memory>("memory")) || freshMemory();
-    let usage = (await this.ctx.storage.get<Usage>("usage")) || freshUsage(day(now));
-    if (usage.day !== day(now)) usage = freshUsage(day(now));
+    this.usage ??= (await this.ctx.storage.get<Usage>("usage")) || freshUsage(day(now));
+    if (this.usage.day !== day(now)) this.usage = freshUsage(day(now));
+    const usage = this.usage;
+    if (this.ready) {  // a think that finished since the last wake-up
+      if (this.ready.intent) mem.intent = this.ready.intent;
+      if (this.ready.error) mem.error = this.ready.error;
+      this.ready = null;
+    }
     let sleep = 30_000;
     if (!this.env.HOUSE_SECRET) {
       mem.status = "no HOUSE_SECRET set: not playing";
       sleep = 30 * 60_000;
     } else {
       try {
-        mem.error = null;
-        sleep = await step((p, b) => this.hub(p, b),
-          (v, intent) => thinkWith({ openrouter: this.env.OPENROUTER_API_KEY, anthropic: this.env.ANTHROPIC_API_KEY,
-                                     referer: this.env.PUBLIC_URL }, v, intent, usage),
-          mem, this.env.HOUSE_SECRET, this.hours(), now);
+        sleep = await step((p, b) => this.hub(p, b), async (v, intent) => {
+          if (!this.thinking) {  // start a think and keep playing; its intent lands on a later wake-up
+            this.thinking = thinkWith({ openrouter: this.env.OPENROUTER_API_KEY, anthropic: this.env.ANTHROPIC_API_KEY,
+                                        referer: this.env.PUBLIC_URL }, v, intent, usage)
+              .then((next) => { this.ready = { intent: next, error: null }; },
+                    (e) => { this.ready = { intent: null, error: `think: ${String(e).slice(0, 200)}` }; })
+              .finally(() => { this.thinking = null; });
+            this.ctx.waitUntil(this.thinking);
+          }
+          return null;
+        }, mem, this.env.HOUSE_SECRET, this.hours(), now);
       } catch (e) {
         mem.error = String(e).slice(0, 300);
         console.error("house agent step failed:", mem.error);

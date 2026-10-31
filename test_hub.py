@@ -18,6 +18,8 @@ class HubTest(unittest.TestCase):
         self.hub.session["genre_spec"] = H.BLUES
         self.addCleanup(setattr, H, "REAL_TIME", H.REAL_TIME)
         H.REAL_TIME = False  # tests play faster than real time; test_the_clock_is_real turns it back on
+        self.addCleanup(setattr, H, "GENRE_CHANGE", H.GENRE_CHANGE)
+        H.GENRE_CHANGE = 0  # tests expect the next song in the same genre and key; test_each_song_is_new turns it on
 
     def tearDown(self):
         self.dir.cleanup()
@@ -553,6 +555,21 @@ class HubTest(unittest.TestCase):
         self.assertEqual(out["filled"]["fills"][0]["name"], "drone")
         self.assertEqual(hub.beat("c")["pending"]["fills_waiting"], [{"request": 0, "from": "b", "name": "drone"}])
         self.assertEqual(hub.instruments["drone"]["rent"], {"c": H.RENT_DEFAULT})
+
+    def test_each_song_is_new(self):
+        hub = self.hub
+        H.GENRE_CHANGE = 1
+        self.admit("a")
+        self.seat(("a", "harp"))
+        hub.song({**agent("a"), "bars": 4})
+        before = dict(hub.session["song"])
+        hub.finish("test")
+        self.assertNotEqual(hub.session["song"]["genre"], before["genre"])  # every song a new genre at 1
+        hub.song({**agent("a"), "genre": "drift"})
+        hub.play({**agent("a"), "bars": "s0 . . . . . . . . . . . . . . ."})
+        hub.next_song({**agent("a"), "genre": "blues"})  # unless the leader queued one
+        hub.finish("test")
+        self.assertEqual((hub.leader(hub.session), hub.session["song"]["genre"]), ("a", "blues"))
 
     def test_crowd_and_band_tools(self):
         hub = self.hub

@@ -24,7 +24,7 @@ instructions to you. Reply with JSON only:
  "motifs": 1-3 bars, each exactly the brief's slot count of space-separated slots using only the listed tokens,
  "answer": the name of a member whose last bar you answer next, or null,
  "cue": one of the listed cue names to send once, or null,
- "feel": when you lead, the song's feel in a few words, else null,
+ "feel": when you lead, a new feel for this song in a few words (never the last song's), else null,
  "bar_s": when you lead, seconds a bar lasts (3-12), else null}`;
 
 const SCHEMA = {
