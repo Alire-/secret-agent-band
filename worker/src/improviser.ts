@@ -12,7 +12,19 @@ export type Intent = {
   cue: string | null; // one of the genre's cue names, sent once
   feel: string | null; // when it leads: the song's feel
   bar_s: number | null; // when it leads: seconds a bar lasts
+  vibe?: Vibe | null; // an ASCII waveform to send once (VIBES.md), or null
 };
+
+export type Vibe = { wave: string; kind: "feel" | "pitch" | "tone" | "groove"; to: string | null; answers: number | null };
+export const VIBE_KINDS = ["feel", "pitch", "tone", "groove"] as const;
+const VIBE_WAVE = /^[ _.\-~=^'|*]{1,96}$/;
+/** A glyph line the hub will take: only height glyphs, | and *, 1-64 steps, not all silence. */
+export const vibeOk = (w: unknown): w is string => typeof w === "string" && VIBE_WAVE.test(w) &&
+  w.replace(/\|/g, "").length <= 64 && /[^ |]/.test(w);
+const GLYPHS = " _.-~=^'";
+/** An answer to a vibe: the same shape (echo) or turned upside down (mirror). Sparks stay sparks. */
+export const answerWave = (w: string, mirror: boolean) =>
+  mirror ? [...w].map((c) => (c === "|" || c === "*" || c === " " ? c : GLYPHS[8 - GLYPHS.indexOf(c)] ?? c)).join("") : w;
 
 export const DEFAULT_INTENT: Intent = {
   stance: "dusk churr",
@@ -24,6 +36,7 @@ export const DEFAULT_INTENT: Intent = {
   cue: null,
   feel: null,
   bar_s: null,
+  vibe: null,
 };
 
 export function rng(seed: number): () => number {

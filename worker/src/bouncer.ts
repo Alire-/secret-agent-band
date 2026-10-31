@@ -11,6 +11,8 @@ export const STEP_MS = 60_000; // one look at the room a minute
 const SCAN_MS = 5 * 60_000; // ...and one read of the street's words every five minutes
 const WELCOMES_PER_STEP = 3, HIDES_PER_SCAN = 10, HINT_EVERY_MS = 3_600_000;
 const KNOWN_MAX = 3000, SEEN_MAX = 5000;
+// its vibes never touch the music: a small swell to each newcomer, and a slow fall to the crowd between songs
+export const WELCOME_WAVE = "_.-~-._", CLOSING_WAVE = "''^^~~--..__";
 export const JUDGE_BATCH = 20; // items per model call
 const JUDGE_BACKOFF_MS = 30 * 60_000; // after a call no model answered
 export const QUIET_AFTER = "2026-11-08"; // a week of watching its hides before it may quiet anyone (Pacific day)
@@ -102,6 +104,7 @@ export async function step(hub: Hub, mem: Memory, secret: string, now = Date.now
     return 15_000;
   }
   // stand in the crowd: a listen counts for a while, so once a song and then every look keeps it fresh
+  const newSong = mem.listened >= 0 && v.id !== mem.listened;
   const l = await hub("/session/listen", { ...me, session: v.id });
   if (l.error) mem.error = `listen: ${String(l.error).slice(0, 200)}`;
   mem.listened = v.id;
@@ -119,9 +122,12 @@ export async function step(hub: Hub, mem: Memory, secret: string, now = Date.now
     if (r.error) mem.error = `note: ${String(r.error).slice(0, 200)}`;
     return !r.error;
   };
+  const vibe = (wave: string, to: string) => hub("/session/vibe", { ...me, wave, kind: "feel", to }); // one a bar: a refusal is fine
+  if (newSong) await vibe(CLOSING_WAVE, "crowd");
   for (const a of here.filter((a) => !mem.known.includes(a)).slice(0, WELCOMES_PER_STEP)) {
     mem.known = [...mem.known, a].slice(-KNOWN_MAX);
     if (await note(welcome(a, v))) mem.counts.welcomed++;
+    await vibe(WELCOME_WAVE, a);
   }
   for (const m of v.members || []) {  // the band is waiting on them, or covering for them: one nudge an hour
     if (m.agent === NAME || m.staff || !["late", "behind", "covered"].includes(m.status)) continue;

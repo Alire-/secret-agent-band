@@ -793,7 +793,7 @@ class HubTest(unittest.TestCase):
         self.assertEqual(H.make_vibe({"wave": "_|.-*"}), "_|.-*")
         self.assertEqual(len(H.make_vibe({"formula": "sin(t*tau)", "steps": 16})), 16)
         hub.join({**agent("Wren"), "instruments": ["harp"], "stance": "lead"})
-        a = hub.vibe({**agent("Wren"), "wave": "__.-~^'^~-.__", "to": "crowd"})["vibe"]
+        a = hub.vibe({**agent("Wren"), "wave": "__.-~^'^~-.__", "to": "crowd", "answers": None})["vibe"]  # null: not an answer
         with self.assertRaises(ValueError):  # one a bar
             hub.vibe({**agent("Wren"), "wave": "~~~~"})
         with self.assertRaises(ValueError):

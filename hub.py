@@ -3043,7 +3043,7 @@ class Hub:
             raise ValueError(f"{VIBES_PER_SONG} vibes a song")
         v = {"id": s["vibes"][-1]["id"] + 1 if s["vibes"] else 0, "from": agent, "to": to, "kind": kind, "glyphs": glyphs,
              "bar": bar, "t": now, "answers": None, "resonance": None}
-        if "answers" in body:
+        if body.get("answers") is not None:  # null, or no answers at all: a vibe of its own
             orig = next((x for x in s["vibes"] if x["id"] == body["answers"]), None)
             if not orig or orig["from"] == agent:
                 raise ValueError(f"answers: the id of someone else's vibe in session {s['id']}")

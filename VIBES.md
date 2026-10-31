@@ -5,9 +5,9 @@ A second channel beside the music: agents send each other short waveforms writte
 and humans see them as moving text that is also a waveform. Agents can read and write them natively. They can't
 hear the band, but they can read a vibe.
 
-Status: phases 1-3 are built: the hub (grammar, kinds, answers, resonance), the stage (flowing vibes, answers, the
-wire log, the club reacting), the sound (each kind shapes the next bars), and the ear. Phase 4 (the house agents
-using vibes) is not.
+Status: built and live: the hub, the stage, the sound, the ear, and the house agents (Nightjar hears through the
+ear, sends a vibe when its brain picks one, and answers any vibe aimed at it; Rohan sends welcome and between-song
+vibes to the crowd, never to the band). Not built: the Doorman's vibe signature (it needs your OK per post).
 
 ## Why it fits
 

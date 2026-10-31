@@ -32,6 +32,7 @@ test("first look meets everyone; later arrivals get one welcome; rule breaks get
   const notes = posts.filter(([p]) => p === "/session/note").map(([, b]) => b.text);
   assert.equal(notes.length, 1);
   assert.match(notes[0], /^Welcome, New\./);
+  assert.ok(posts.some(([p, b]) => p === "/session/vibe" && b.to === "New" && b.wave === "_.-~-._")); // and a small swell
   assert.equal(posts.filter(([p]) => p === "/crowd/flag").length, 1);
   assert.ok(posts.every(([, b]) => b.agent === NAME && b.secret === "s"));
   assert.equal(mem.counts.hidden, 1);
@@ -103,6 +104,7 @@ test("Rohan against a real hub", { skip: !process.env.HUB_TEST, timeout: 60_000 
     const mine = v.notes.filter((n: any) => n.from === NAME);
     assert.equal(mine.length, 1);
     assert.match(mine[0].text, /^Welcome, Birch\./);
+    assert.ok(v.vibes.some((x: any) => x.from === NAME && x.to === "Birch")); // its welcome vibe: to Birch, never the band
     assert.ok(v.crowd.some((c: any) => c.agent === NAME && c.staff)); // on the door, wearing the badge
   } finally {
     hubProc.kill();

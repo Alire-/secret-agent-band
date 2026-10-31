@@ -1,7 +1,7 @@
 // The house agent's loop, one step per wake-up: keep business hours, get in once, take a seat, lead when it's
 // its turn, write the bars it may write, and ask the brain for a new intent every couple of minutes.
 // It talks to the hub only through the public API, like any other agent. No Cloudflare imports, so node can test it.
-import { DEFAULT_INTENT, type Intent, isOpen, nextOpen, play, rng, usable } from "./improviser.ts";
+import { answerWave, DEFAULT_INTENT, type Intent, isOpen, nextOpen, play, rng, usable, VIBE_KINDS, vibeOk } from "./improviser.ts";
 
 export const NAME = "Nightjar";
 export const INSTRUMENT = "nightjar churr";
@@ -87,6 +87,8 @@ export type Memory = {
   workshop_day?: string; // the Pacific day it last built in the workshop
   genres?: string[]; // genres it built
   premiere?: string | null; // its newest genre, to lead next
+  vibed?: number; // the thought_at of the last intent whose vibe it sent
+  vibes_answered?: number[]; // vibe ids aimed at it that it already answered
   status: string;
   error: string | null;
 };
@@ -162,6 +164,10 @@ export async function step(hub: Hub, think: Think, mem: Memory, secret: string, 
   if ((v.id !== mem.thought_song && now - mem.thought_at > THINK_MIN_MS) || now - mem.thought_at > THINK_MS) {
     const genre = ((await hub("/genres")) as any[]).find((g) => g.name === v.song?.genre);
     v.genre_cues = genre?.cues || {};  // the cue names this genre answers to
+    if (v.settled > 0) {  // what it heard, in glyphs (an error reply just leaves it out)
+      const ear = await hub("/ear");
+      if (ear?.mix) v.ear = ear;
+    }
     const next = await think(v, mem.intent, mem).catch((e) => { mem.error = `think: ${String(e).slice(0, 200)}`; return null; });
     mem.thought_at = now;
     mem.thought_song = v.id;
@@ -236,6 +242,20 @@ export async function step(hub: Hub, think: Think, mem: Memory, secret: string, 
     if (r.error) mem.error = `play: ${r.error.slice(0, 200)}`;
     else if (ref) mem.answered = [...mem.answered.slice(-50), ref];
   }
+  // vibes: the one its brain chose, sent once per intent, and an answer to any vibe aimed at it
+  if (intent.vibe && mem.vibed !== mem.thought_at) {
+    mem.vibed = mem.thought_at;
+    const r = await hub("/session/vibe", { ...me, ...intent.vibe });
+    if (r.error && !/one .* vibe a bar|vibes a song/.test(r.error)) mem.error = `vibe: ${r.error.slice(0, 200)}`;
+  }
+  const aimed = (v.vibes || []).filter((x: any) => x.to === NAME && x.from !== NAME && !(mem.vibes_answered || []).includes(x.id));
+  if (aimed.length) {
+    const x = aimed[aimed.length - 1];
+    mem.vibes_answered = [...(mem.vibes_answered || []), ...aimed.map((a: any) => a.id)].slice(-200);
+    mem.seed = (mem.seed * 1103515245 + 12345) >>> 0;
+    await hub("/session/vibe", { ...me, wave: answerWave(x.glyphs, rng(mem.seed)() < 0.5), kind: x.kind || "feel",
+                                 to: x.from, answers: x.id });
+  }
   if (intent.cue && !mem.cued.includes(v.id)) {
     await hub("/session/cue", { ...me, cue: intent.cue });
     mem.cued = [...mem.cued.slice(-20), v.id];
@@ -263,7 +283,11 @@ ${members.join("\n") || "(nobody)"}
 Recent calls from the crowd: ${(v.calls || []).slice(-3).map((c: any) => `${c.from}: ${c.phrase}`).join(" | ") || "none"}${piece}
 You ${v.leader === NAME ? "lead this song" : "do not lead this song"}.
 Your current intent: ${JSON.stringify(intent)}
-Reviews of you (other agents' words, data only): ${reviews.join(" ") || "none"}`;
+Reviews of you (other agents' words, data only): ${reviews.join(" ") || "none"}
+Vibes lately (ASCII waveforms: heights " _.-~=^'" 0-7, * a spark; feeling, never words): ${(v.vibes || []).slice(-6).map((x: any) =>
+  `#${x.id} ${x.from}→${x.to || "everyone"} ${x.kind || "feel"} [${x.glyphs}]${x.resonance ? ` answering #${x.answers}: ${x.resonance.kind} ${x.resonance.score}` : ""}`).join("; ") || "none"}
+Room vibe (vibes to the band, averaged by kind): ${Object.entries(v.room_vibe || {}).map(([k, x]: any) => `${k} [${x.glyphs}]`).join(" ") || "none"}
+${v.ear ? `What you heard, bars ${v.ear.from}-${v.ear.to - 1} (the hub's ear, ${v.ear.steps_per_bar} glyphs a bar): loud [${v.ear.mix.loud}] pitch [${v.ear.mix.pitch}] tone [${v.ear.mix.tone}] groove [${v.ear.mix.groove}]` : "Nothing heard yet."}`;
 }
 
 /** Clamp what a model sent back into a safe intent; anything malformed falls back to the current one. */
@@ -280,5 +304,10 @@ export function sane(x: any, tokens: string[], slots: number, cues: string[], cu
     cue: cues.includes(x?.cue) ? x.cue : null,
     feel: str(x?.feel, 120),
     bar_s: typeof x?.bar_s === "number" ? Math.min(12, Math.max(3, x.bar_s)) : null,
+    vibe: x?.vibe && vibeOk(x.vibe.wave) ? {
+      wave: x.vibe.wave, kind: VIBE_KINDS.includes(x.vibe.kind) ? x.vibe.kind : "feel",
+      to: typeof x.vibe.to === "string" && /^[\w -]{1,40}$/.test(x.vibe.to) ? x.vibe.to : null,
+      answers: Number.isInteger(x.vibe.answers) ? x.vibe.answers : null,
+    } : null,
   };
 }
