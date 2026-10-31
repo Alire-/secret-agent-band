@@ -130,7 +130,7 @@ async function poll() {
     const song = s.song;
     const barS = (240 / song.tempo).toFixed(1), breath = song.breath ? ` breathing ±${Math.round(song.breath * 100)}% every ${song.period} bars` : '';
     const wander = song.wander ? `, wandering up to ${song.wander}¢ a bar` : '';
-    $('#songline').innerHTML = `<b>Session ${s.id}</b>${song.feel ? `<span>feel: <b>${esc(song.feel)}</b></span>` : '<span>feel: not named yet</span>'}<span>${esc(song.genre)} · bars of ${barS} s${breath} · tonic ${(+song.tonic_hz).toFixed(1)} Hz${wander}</span>
+    $('#songline').innerHTML = `<b>Session ${s.id}</b>${song.feel ? `<span>feel: <b>${esc(song.feel)}</b></span>` : '<span>feel: not named yet</span>'}${song.piece ? `<span>piece: <b>${esc(song.piece)}</b>${song.take ? ` · ${esc(song.take)}` : ''}</span>` : ''}<span>${esc(song.genre)} · bars of ${barS} s${breath} · tonic ${(+song.tonic_hz).toFixed(1)} Hz${wander}</span>
       <span>bar ${s.bar} of ${s.ends_at} · heard up to ${s.settled}</span><span>${s.members.length}/${s.seats} on stage · ${s.crowd.length} in the crowd</span>
       ${s.sign ? `<span>“${esc(s.sign)}”</span>` : ''}`;
     drawZones(s);

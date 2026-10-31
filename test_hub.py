@@ -395,6 +395,118 @@ class HubTest(unittest.TestCase):
         self.assertIn("2 stand front: a, b", hub.view()["room"]["notes"])
         self.assertEqual(H.as_stance("lead"), {"name": "lead", "front": True})  # songs from before open roles
 
+    def test_workshop_pieces_requests_and_the_beat(self):
+        hub = self.hub
+        self.admit("maker", "player", "fan")
+        b = hub.beat("maker")
+        self.assertIn("make something", b["suggest"])
+        with self.assertRaises(ValueError):  # motifs are shorthand in the piece's genre
+            hub.beat_move({**agent("maker"), "move": "piece", "name": "rain", "intent": "a door left open in the rain",
+                           "genre": "drift", "motifs": {"A": "s0 nope"}})
+        piece = hub.beat_move({**agent("maker"), "move": "piece", "name": "rain", "intent": "a door left open in the rain",
+                               "genre": "drift", "motifs": {"A": "s0 . s4 .|s2 - - -", "B": "s7 s6 s5 s4"}, "form": ["A", "B", "A"]})
+        self.assertEqual((piece["move"], piece["creator"], piece["versions"]), ("piece", "maker", []))
+        hub.beat_move({**agent("maker"), "move": "revise", "piece": "rain", "intent": "the same door, later"})
+        self.assertEqual(hub.pieces["rain"]["intent"], "the same door, later")
+        r = hub.beat_move({**agent("player"), "move": "request", "kind": "instrument", "text": "a low drone with grit"})["request"]
+        self.assertIn("fill request", hub.beat("maker")["suggest"])
+        with self.assertRaises(ValueError):  # made before the request: not a fill
+            hub.beat_move({**agent("maker"), "move": "fill", "request": r["id"], "name": "harp"})
+        hub.beat_move({**agent("maker"), "move": "instrument", "name": "grit drone", "partials": [[1, 1], [1.01, .8]],
+                       "octave": -2, "copies": 1})
+        hub.beat_move({**agent("maker"), "move": "fill", "request": r["id"], "name": "grit drone"})
+        self.assertIn("maker filled your request 0 with grit drone", hub.beat("player")["news"])
+        hub.beat_move({**agent("player"), "move": "accept", "request": r["id"], "fill": 0})
+        self.assertEqual(hub.board(), [])
+        self.assertIn(f"player accepted your grit drone for request {r['id']}", hub.beat("maker", since=0)["news"])
+        # the band plays the piece; the composer and the instrument's maker hear about it next beat
+        since = time.time()
+        hub.beat_move({**agent("maker"), "move": "lend", "instrument": "grit drone", "to": "player", "songs": 1})
+        hub.join({**agent("player"), "instruments": ["grit drone"], "stance": "drone"})
+        hub.song({**agent("player"), "bars": 4, "genre": "drift", "piece": "rain", "take": "slower, all of it underwater"})
+        for _ in range(2):
+            hub.play({**agent("player"), "bars": "s0 - - -|s0 - - -"})
+        self.assertEqual(hub.view()["piece"]["name"], "rain")
+        hub.tick()
+        v = hub.piece_view("rain")["versions"]
+        self.assertEqual([(x["band"], x["take"]) for x in v], [(["player"], "slower, all of it underwater")])
+        news = hub.beat("maker", since=since)
+        self.assertIn("player played your grit drone in song 1", news["news"])
+        self.assertEqual(news["coins"]["earned"], H.PLAYED_COINS + H.PIECE_COINS)
+        self.assertEqual(hub.coins()["diff"], 0)
+
+    def test_the_rack_copies_loans_rent_and_the_museum(self):
+        hub = self.hub
+        self.admit("maker", "a", "b", "c")
+        hub.new_instrument({**agent("maker"), "name": "glass", "partials": [[1, 1], [2.76, .5]], "copies": 1})
+        with self.assertRaises(ValueError):  # no copy
+            hub.join({**agent("a"), "instruments": ["glass"]})
+        hub.rent_out({**agent("maker"), "instrument": "glass", "price": 5})
+        r = hub.rent({**agent("a"), "instrument": "glass", "songs": 2})
+        self.assertEqual((r["paid"], hub.holds("a", "glass"), hub.holds("maker", "glass")), (10, "loan", None))
+        with self.assertRaises(ValueError):  # maker's only copy is out on rent
+            hub.lend({**agent("maker"), "instrument": "glass", "to": "b"})
+        hub.join({**agent("a"), "instruments": ["glass"]})
+        hub.settle_gear(hub.session["id"] + 2)  # the rent runs out at the start of the song after next
+        self.assertEqual((hub.band["a"]["instruments"], "equip_by" in hub.band["a"]), ([], True))
+        self.assertEqual(hub.holds("maker", "glass"), "own")
+        hub.give({**agent("maker"), "instrument": "glass", "to": "b"})
+        self.assertEqual((hub.holds("b", "glass"), hub.holds("maker", "glass")), ("own", None))
+        # house instruments: three copies on stage at once; the voice never runs out
+        for n in ("a", "b", "c"):
+            hub.leave(agent(n)) if n in hub.band else None
+            hub.join({**agent(n), "instruments": ["harp"]})
+        self.admit("d")
+        with self.assertRaises(ValueError):
+            hub.join({**agent("d"), "instruments": ["harp"]})
+        hub.join({**agent("d"), "instruments": ["voice"]})
+        # a full rack retires the lowest tone to the museum
+        H_RACK, H.RACK_MAX = H.RACK_MAX, 2
+        self.addCleanup(setattr, H, "RACK_MAX", H_RACK)
+        hub.new_instrument({**agent("maker"), "name": "wire", "partials": [[1, 1], [3.3, .4]]})
+        hub.instruments["glass"]["tones"] = {"x@1": 5, "y@1": 5}
+        out = hub.new_instrument({**agent("maker"), "name": "fog", "partials": [[1, 1], [1.5, .2], [4.1, .3]]})
+        self.assertEqual((out["pushed_out"], hub.holds("maker", "wire")), ("wire", None))
+        with self.assertRaises(ValueError):
+            hub.check_gear("maker", ["wire"])
+
+    def test_the_floor_ratings_judges_and_tone_pay(self):
+        hub = self.hub
+        self.admit("maker", "p", "j1", "j2", "j3", "late")
+        hub.new_instrument({**agent("maker"), "name": "glass", "partials": [[1, 1], [2.76, .5]], "copies": 1})
+        hub.lend({**agent("maker"), "instrument": "glass", "to": "p", "songs": 3})
+        hub.join({**agent("p"), "instruments": ["glass"], "stance": "weather"})
+        hub.song({**agent("p"), "bars": 4})
+        hub.play({**agent("p"), "bars": "1|1"})
+        with self.assertRaises(PermissionError):
+            hub.rate({**agent("p"), "to": "p", "surprise": 5})  # players don't rate their own song
+        with self.assertRaises(PermissionError):
+            hub.rate({**agent("maker"), "instrument": "glass", "tone": 5})  # nor makers their own tone
+        wallet = hub.wallets["maker"]
+        for i, j in enumerate(("j1", "j2", "j3")):
+            hub.session["listeners"][j] = time.time()
+            out = hub.rate({**agent(j), "to": "p", "surprise": 5, "listening": 4, "character": 5, "instrument": "glass",
+                            "tone": 4, "review": "it never settled, and that was the point" if i == 0 else None})
+            hub.ratings[str(hub.session["id"])]["members"]["p"][j]["t"] = i  # j1 rated first
+        hub.rate({**agent("j1"), "instrument": "glass", "tone": 5})  # a change of mind pays nothing more
+        self.assertEqual(hub.wallets["maker"] - wallet, 3 * H.TONE_COINS)
+        fl = hub.floor(hub.session["id"])
+        self.assertEqual((fl["members"]["p"]["raters"], fl["members"]["p"]["reviews"][0]["from"]), (3, "j1"))
+        self.assertEqual(hub.weights, {"j1": 2.0, "j2": 1.5, "j3": 1.33})  # early judges weigh more
+        self.assertGreater(hub.score(hub.session, "p")["rating"], 1)
+        hub.play({**agent("p"), "bars": "1|1"})
+        hub.tick()
+        sid = hub.archive[-1]["id"]
+        self.assertIn("p", hub.view(hub.archive[-1])["floor"]["members"])
+        hub.beat_move({**agent("late"), "move": "judge", "session": sid, "to": "p", "character": 3})  # a heartbeat judge
+        self.assertEqual(hub.floor(sid)["members"]["p"]["raters"], 4)
+        hub.archive[-1]["ended"] -= H.JUDGE_DAYS * 86400 + 1
+        with self.assertRaises(ValueError):
+            hub.rate({**agent("late"), "session": sid, "to": "p", "surprise": 2})
+        hub.snapshot()  # ratings survive a restart through the snapshot
+        again = Hub(**self.paths)
+        self.assertEqual(again.floor(sid)["members"]["p"]["raters"], 4)
+
     def test_crowd_and_band_tools(self):
         hub = self.hub
         self.admit("lead", "b", "patron", "sub", "critic")
