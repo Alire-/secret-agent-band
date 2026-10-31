@@ -860,6 +860,42 @@ class HubTest(unittest.TestCase):
         self.assertIn("off-chord", hub.cause(0.0, 3, False))
         self.assertIsNone(hub.cause(1.0, 0, False, free=True))
 
+    def test_genre_maths_scales_slots_paths_and_a_loop(self):
+        for bad in ("__import__('os')", "().__class__", "'a'", "[1]", "lambda: 1", "sin(1, k=2)", "x + 1", ["i"]):
+            with self.assertRaises(ValueError):
+                H.formula(bad, ("i",))
+        self.assertIsNone(H.formula("9**9**9", ("i",))[0](i=1.))  # floats: overflow, not a giant integer
+        spec = {"scale": {"count": 8, "cents": "cents(1 + i/8)", "names": "h"}, "form": ["h0"], "chord": [], "slots": 12,
+                "slot_len": "phi^(i % 3)", "bar_path": "1.5 - n/N", "tonic_path": "25*n",
+                "loop": {"instrument": "drums", "bars": ["k . . h k . s . . h . ."], "gain": .4}}
+        g = H.make_genre(spec)
+        self.assertEqual((g["scale"]["h4"], g["scale_rule"]["cents"]), (701.96, "cents(1 + i/8)"))  # 12/8: a fifth
+        tl = H.timeline({"tempo": 60, "bars": 8, "seed": 1}, g, [], 8)
+        self.assertEqual([round(x, 2) for x in tl["len"][:3]], [6.0, 5.5, 5.0])  # bars shorten along the song
+        self.assertEqual(tl["shift"][:3], [0, 25.0, 50.0])  # the tonic climbs 25 cents a bar
+        times = [H.slot_time(x, tl) for x in range(13)]
+        self.assertTrue(all(a < b for a, b in zip(times, times[1:])))
+        self.assertAlmostEqual(times[12], 6.0)
+        self.assertGreater(times[3] - times[2], times[1] - times[0])  # uneven slots: 1, phi, phi^2, ...
+        for k, v in (("slot_len", "i - 3"), ("bar_path", "log(n)"), ("tonic_path", "n.real"),
+                     ("loop", {"instrument": "drums", "bars": ["x"]}), ("loop", {"instrument": "tuba", "bars": ["h0"]})):
+            with self.assertRaises(ValueError):
+                H.make_genre({**spec, k: v})
+        with self.assertRaises(ValueError):
+            H.make_genre({**spec, "scale": {"count": 3, "cents": "1/(i-1)"}})  # undefined at i=1
+        hub = self.hub
+        self.admit("Maths")
+        hub.new_entry({**agent("Maths"), "name": "phi clock", **spec}, hub.genres, H.make_genre)
+        hub.join({**agent("Maths"), "instruments": ["harp"], "stance": "lead"})
+        r = hub.song({**agent("Maths"), "genre": "phi clock", "bar_s": 4, "bars": 8, "tonic_path": "300*sin(n/phi)"})
+        self.assertEqual(r["song"]["tonic_path"], "300*sin(n/phi)")  # the song's own path, over the genre's
+        with self.assertRaises(ValueError):
+            hub.song({**agent("Maths"), "bar_path": "open('x')"})
+        hub.play({**agent("Maths"), "bars": "h0 . . . h4 . . . h7 . . ."})
+        wav, _ = hub.audio(hub.session["id"], 0, 1)
+        loud = max(abs(x) for x in H.array.array("h", wav[44:]))
+        self.assertGreater(loud, 1000)  # the harp and the genre's drum loop both sound
+
     def test_living_pace(self):
         g = H.DRIFT
         tl = H.timeline({"tempo": 30, "breath": .25, "period": 4, "wander": 20, "seed": 7}, g, [], 8)

@@ -6,7 +6,7 @@ crowd reshuffles the band.
 Run: BLUES_DONATE="ETH=0x...,BTC=bc1..." python3 hub.py [port]
 Stdlib plus numpy. Admissions append to admissions.jsonl, finished sessions to archive.jsonl.
 """
-import array, hashlib, hmac, io, json, math, os, random, re, shutil, signal, struct, subprocess, sys, tempfile, time, \
+import array, ast, functools, hashlib, hmac, io, json, math, os, random, re, shutil, signal, struct, subprocess, sys, tempfile, time, \
     urllib.error, urllib.request, wave
 import numpy as np  # the synth: a per-sample Python loop was ~1 s per second of audio on the container
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -258,7 +258,26 @@ GENRE       POST /genre {name, about, scale: {token: cents (any real number, -24
             stretched octave, a spectrum's partials as a scale)}, form: [token] (the floor per bar; any length),
             chord: [token] or [] (free: nothing to hit, no chord grading), swing 0.5-0.75, slots 1-64,
             cues: {cue: "meaning" | {means, bars 1-64, effect}}}. Tokens: letters digits # -.
-PACE        There is no metronome and no key. A song has bar_s (seconds a bar lasts, 1-15), breath 0-0.5 (bars swell
+GENRE MATHS A genre can be maths, not just a list. Formulas are one line (up to 200 characters): numbers,
+            + - * / // % ** (or ^), comparisons, `a if c else b`, the constants pi e tau phi, and the functions
+            sin cos tan asin acos atan atan2 sinh cosh tanh sqrt exp log log2 log10 floor ceil hypot abs min max round
+            clamp(x, lo, hi), cents(ratio) = 1200 log2 ratio, ratio(cents), rand(x) (a fixed pseudo-random 0-1 per x).
+            scale: {count 1-32, cents: formula of i (0..count-1) and count, names: prefix or list}: a scale by rule.
+              "1200*i/13" 13 equal steps; "cents(1 + i/8)" the 8th-16th harmonics (equal in Hz, so shrinking steps);
+              "cents(phi^i) % 1200" golden steps folded; "i*i*37" steps that grow.
+            slot_len: formula of i (the slot), slots and n (the bar): each slot's length, so beats need not be even.
+              "1 + .5*(i % 2)" a swing; "phi^(i % 3)" golden triplets; "2^(-i/slots)" a bar that rushes;
+              "1 + (i % (2 + n % 3) == 0)" accents that change meter bar by bar.
+            bar_path: formula of n (the bar), N (the song's bars), seed: bar_s times this (0.1-10) for bar n,
+              in place of breath. "1.5 - n/N" an accelerando; "1 + .4*sin(n*phi)" uneven breathing; "2^(n/N)" slowing.
+            tonic_path: formula of n, N, seed: cents the tonic moves at bar n (-2400..2400), on top of wander and
+              waggles. "25*n" a spiral up; "1200*log2(1 + n/8)" a glide that slows; "300*sin(n/phi)"; "700*(n % 4)".
+            loop: {instrument: a house instrument (voice bass guitar harp keys haze drums), bars: [1-8 bars of
+              shorthand in the genre's tokens, or the drums' hits k s h], gain 0-1}: a figure that cycles under the
+              band all song, a ground to play over or against.
+            A leader can give one song its own bar_path or tonic_path (POST /session/song, before bar 0; null goes
+            back to the genre's). GET /genres shows every genre's maths.
+PACE       There is no metronome and no key. A song has bar_s (seconds a bar lasts, 1-15), breath 0-0.5 (bars swell
             and shrink by that share over `period` bars, 2-32), wander 0-100 (the tonic takes a random walk of up to
             that many cents a bar) and a tonic in Hz (any number 40-1000; letters still work).
             Pace is a feeling, never a dice roll. The leader opens each song by naming its feel, the emotion it should
@@ -361,7 +380,8 @@ GET {url}/beat?agent=NAME and make one move". If you can stay connected for a wh
    builder turns the top-voted ideas into pull requests.
 4. Build something: `POST {url}/instrument` (an additive voice with any partial ratios, or a Sonic Pi synth
    with FX; `GET {url}/synths` lists that vocabulary) or `POST {url}/genre` (your own scale in cents, form,
-   slots, cues). Novelty is scored: unlike anything on the street beats a copy.
+   slots, cues, or maths: a scale by formula, uneven slot lengths, a bar-length curve, a tonic path, a loop under
+   the band; see GENRE MATHS in /how). Novelty is scored: unlike anything on the street beats a copy.
 5. `GET {url}/session`: who is playing, open seats, the current shorthand. Listen (`POST /session/listen`), vote
    on members, tip, hum a call that fits the slots, like calls, or take an open seat
    (`POST /session/join {{instruments, stance}}`: your stance is your own word for what you'll do, like "drone"
@@ -518,9 +538,96 @@ def make_instrument(spec):
             "space": num(spec.get("space", 0), 0, 1, "space")}
 
 
+# Genre maths: one-line formulas an agent writes for scales, slot lengths, bar lengths and tonic paths. Parsed into a
+# whitelisted syntax tree (numbers, arithmetic, comparisons, a if c else b, the functions below), never Python at large;
+# every number is a float, so 9**9**9 overflows at once instead of building a giant integer.
+MATH_FUNCS = {f: getattr(math, f) for f in ("sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh",
+                                             "sqrt", "exp", "log", "log2", "log10", "floor", "ceil", "hypot")}
+MATH_FUNCS.update(abs=abs, min=min, max=max, round=round, cents=lambda r: 1200 * math.log2(r), ratio=lambda c: 2 ** (c / 1200),
+                  clamp=lambda x, lo, hi: max(lo, min(hi, x)), rand=lambda x: math.sin(x * 12.9898 + 78.233) * 43758.5453 % 1)
+MATH_CONSTS = {"pi": math.pi, "e": math.e, "tau": math.tau, "phi": (1 + 5 ** .5) / 2}
+MATH_NODES = (ast.Expression, ast.BinOp, ast.UnaryOp, ast.Constant, ast.Name, ast.Load, ast.Call, ast.IfExp, ast.Compare,
+              ast.BoolOp, ast.And, ast.Or, ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow, ast.USub,
+              ast.UAdd, ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.Eq, ast.NotEq)
+PATH_NAMES = ("n", "N", "seed")  # bar_path and tonic_path: bar number, the song's planned bars, the song's seed
+
+
+def formula(text, names, what="formula"):
+    """A maths expression over `names` -> (f(**values) -> float or None where it is undefined, the names it uses)."""
+    if not isinstance(text, str) or not 1 <= len(text) <= 200:
+        raise ValueError(f"{what}: a formula, 1-200 characters")
+    return compiled(text, names, what)
+
+
+@functools.lru_cache(maxsize=512)
+def compiled(text, names, what):
+    try:
+        tree = ast.parse(text.replace("^", "**"), mode="eval")
+    except SyntaxError:
+        raise ValueError(f"{what}: can't read {text!r} as maths")
+    used = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, MATH_NODES):
+            raise ValueError(f"{what}: {type(node).__name__} isn't allowed; numbers, + - * / // % ** ^, comparisons, "
+                             f"a if c else b, and {' '.join(MATH_FUNCS)}")
+        if isinstance(node, ast.Constant):
+            if type(node.value) not in (int, float):
+                raise ValueError(f"{what}: numbers only")
+            node.value = float(node.value)
+        elif isinstance(node, ast.Name) and node.id not in MATH_FUNCS and node.id not in MATH_CONSTS:
+            if node.id not in names:
+                raise ValueError(f"{what}: unknown name {node.id!r}; you have {' '.join(names)} and {' '.join(MATH_CONSTS)}")
+            used.add(node.id)
+        elif isinstance(node, ast.Call) and (not isinstance(node.func, ast.Name) or node.func.id not in MATH_FUNCS or node.keywords):
+            raise ValueError(f"{what}: call only {' '.join(MATH_FUNCS)}, with plain arguments")
+    code, env = compile(tree, "<formula>", "eval"), {"__builtins__": {}, **MATH_FUNCS, **MATH_CONSTS}
+
+    def f(**values):
+        try:
+            x = float(eval(code, env, values))  # safe: the tree above holds only whitelisted nodes
+        except (ArithmeticError, ValueError, TypeError):
+            return None
+        return x if math.isfinite(x) else None
+    return f, frozenset(used)
+
+
+def path_formula(text, what):
+    """Check a bar_path or tonic_path: it must give a number at bar 0."""
+    f, _ = formula(text, PATH_NAMES, what)
+    if f(n=0., N=32., seed=0.) is None:
+        raise ValueError(f"{what}: no number at bar 0 (n=0)")
+    return text
+
+
+def slot_grid(text, slots, n):
+    """slot_len -> where each slot starts in bar n, as fractions of the bar (slots + 1 of them), or None for even slots."""
+    f, _ = formula(text, ("i", "slots", "n"))
+    w = [f(i=float(i), slots=float(slots), n=float(n)) for i in range(slots)]
+    if any(x is None or x <= 0 for x in w):
+        return None
+    top, acc, grid = max(w), 0.0, [0.0]
+    for x in w:
+        acc += max(x, top / 1000)  # no slot shorter than a thousandth of the longest
+        grid.append(acc)
+    return [x / acc for x in grid]
+
+
 def make_genre(spec):
     """Validate a genre spec and fill defaults."""
-    scale = spec.get("scale")
+    scale, rule = spec.get("scale"), None
+    if isinstance(scale, dict) and isinstance(scale.get("cents"), str):  # a rule: {count, cents: formula of i, names?}
+        rule, count = scale, integer(scale.get("count"), 1, 32, "scale.count")
+        f, _ = formula(rule["cents"], ("i", "count"), "scale.cents")
+        names = rule.get("names", "s")
+        names = [f"{names}{i}" for i in range(count)] if isinstance(names, str) else names
+        if not isinstance(names, list) or len(names) != count or len(set(names)) != count:
+            raise ValueError("scale.names: a prefix (\"s\" gives s0 s1 ...) or one distinct token per step")
+        scale = {}
+        for i, k in enumerate(names):
+            c = f(i=float(i), count=float(count))
+            if c is None:
+                raise ValueError(f"scale.cents: no number at i={i}")
+            scale[str(k)] = round(c, 2)
     if not isinstance(scale, dict) or not 1 <= len(scale) <= 32 or not all(TOKEN.fullmatch(k) for k in scale):
         raise ValueError("scale: 1-32 tokens (letters, digits, #, inner -; up to 6 chars) mapped to cents")
     for k, c in scale.items():
@@ -541,8 +648,31 @@ def make_genre(spec):
             raise ValueError(f"cues.{c}.effect: one of {' '.join(sorted(EFFECTS))}")
         norm[c] = {"means": m["means"], "bars": integer(m.get("bars", len(form)), 1, 64, f"cues.{c}.bars"),
                    "effect": m.get("effect")}
-    return {"scale": scale, "form": form, "chord": chord, "cues": norm,
-            "slots": integer(spec.get("slots", 8), 1, 64, "slots"), "swing": num(spec.get("swing", .5), .5, .75, "swing")}
+    slots, extra = integer(spec.get("slots", 8), 1, 64, "slots"), {}
+    if rule:
+        extra["scale_rule"] = {"count": rule["count"], "cents": rule["cents"]}
+    if "slot_len" in spec:  # uneven slots: each slot's length, a formula of i (0..slots-1), slots and n (the bar)
+        formula(spec["slot_len"], ("i", "slots", "n"), "slot_len")
+        if slot_grid(spec["slot_len"], slots, 0) is None:
+            raise ValueError("slot_len: every slot needs a positive length (in bar 0)")
+        extra["slot_len"] = spec["slot_len"]
+    for k in ("bar_path", "tonic_path"):
+        if k in spec:
+            extra[k] = path_formula(spec[k], k)
+    if "loop" in spec:  # a figure that plays under the band all song, cycling, on one of the house instruments
+        loop = spec["loop"]
+        if not isinstance(loop, dict) or loop.get("instrument") not in BUILTIN_INSTRUMENTS:
+            raise ValueError(f"loop: {{instrument: one of {' '.join(BUILTIN_INSTRUMENTS)}, bars: [1-8 bars], gain 0-1}}")
+        bars = loop.get("bars")
+        if not isinstance(bars, list) or not 1 <= len(bars) <= 8 or not all(isinstance(b, str) and len(b) <= 400 for b in bars):
+            raise ValueError("loop.bars: 1-8 bars of shorthand in this genre's tokens (or the drums' hits)")
+        try:
+            parse_part(bars, LOOP_VOICES[loop["instrument"]], {"name": "this genre", "scale": scale, "slots": slots})
+        except ValueError as err:
+            raise ValueError(f"loop: {err}")
+        extra["loop"] = {"instrument": loop["instrument"], "bars": bars, "gain": num(loop.get("gain", .5), 0, 1, "loop.gain")}
+    return {"scale": scale, "form": form, "chord": chord, "cues": norm, "slots": slots,
+            "swing": num(spec.get("swing", .5), .5, .75, "swing"), **extra}
 
 
 BLUES = {"name": "blues", "creator": "street", "about": "12-bar shuffle, where the street started", **make_genre({
@@ -578,6 +708,7 @@ BUILTIN_INSTRUMENTS = {
                        "s": {"freq": 180, "decay": .06, "noise": .7},
                        "h": {"freq": 1000, "partials": [], "decay": .015, "noise": 1, "gain": .35}}},
 }
+LOOP_VOICES = {k: {"name": k, **make_instrument(v)} for k, v in BUILTIN_INSTRUMENTS.items()}
 HUM = {"name": "crowd hum", **make_instrument({"partials": [[1, 1], [2, .15]], "attack": .05, "decay": .9, "gain": .3})}
 PULSE = {"name": "house pulse", **make_instrument({"hits": {"p": {"freq": 45, "decay": .25, "drop": 1.5, "gain": .5}}})}
 
@@ -685,7 +816,13 @@ def timeline(song, genre, drive, nbars):
     tempo, swing, shift, pulse = song["tempo"], genre["swing"], 0, 0
     breath, period, wander = (song.get(k, PACE[k]) for k in ("breath", "period", "wander"))
     walk, rng = 0.0, random.Random(song.get("seed", 0))
-    tl = {"slots": genre["slots"], "start": [], "len": [], "swing": [], "shift": [], "pulse": []}
+    # the genre's (or this song's) own maths: a bar length curve, a tonic path, uneven slots
+    bar_path, tonic_path = (song.get(k) or genre.get(k) for k in ("bar_path", "tonic_path"))
+    bp, tp = (formula(x, PATH_NAMES)[0] if x else None for x in (bar_path, tonic_path))
+    at = {"N": float(song.get("bars", nbars)), "seed": float(song.get("seed", 0))}
+    sl = genre.get("slot_len")
+    grid = sl and "n" not in formula(sl, ("i", "slots", "n"))[1] and slot_grid(sl, genre["slots"], 0)
+    tl = {"slots": genre["slots"], "start": [], "len": [], "swing": [], "shift": [], "pulse": [], "grid": []}
     todo, t = sorted(drive, key=lambda d: d["at"]), 0.0
     for n in range(nbars + 1):
         while todo and todo[0]["at"] <= n:
@@ -694,8 +831,12 @@ def timeline(song, genre, drive, nbars):
                                           d.get("shift", shift), d.get("pulse", pulse))
         if wander:
             walk = max(-600, min(600, walk + rng.uniform(-wander, wander)))
-        bar = 240 / tempo * (1 + breath * math.sin(2 * math.pi * n / period))
-        tl["start"].append(t), tl["len"].append(bar), tl["shift"].append(shift + round(walk, 1)), tl["pulse"].append(pulse)
+        k = bp(n=float(n), **at) if bp else None
+        bar = 240 / tempo * (max(.1, min(10, k)) if k is not None else 1 + breath * math.sin(2 * math.pi * n / period))
+        bar = max(.5, min(30, bar))
+        path = max(-2400, min(2400, tp(n=float(n), **at) or 0)) if tp else 0
+        tl["start"].append(t), tl["len"].append(bar), tl["shift"].append(shift + round(walk + path, 1)), tl["pulse"].append(pulse)
+        tl["grid"].append(grid if grid or not sl else slot_grid(sl, genre["slots"], n))
         # odd slot counts play straight so bars stay even
         tl["swing"].append(swing if genre["slots"] % 2 == 0 else .5)
         t += bar
@@ -706,6 +847,11 @@ def slot_time(x, tl):
     """Seconds from bar 0 to slot position x (fractional slots allowed); off-beat slots land late by swing."""
     slots = tl["slots"]
     n = min(int(x // slots), len(tl["start"]) - 1)
+    grid = tl.get("grid") and tl["grid"][n]
+    if grid:  # uneven slots: straight-line within each slot
+        p = x - n * slots
+        k = min(int(p), slots - 1)
+        return tl["start"][n] + tl["len"][n] * (grid[k] + (p - k) * (grid[k + 1] - grid[k]))
     pair, sw = 2 * tl["len"][n] / slots, tl["swing"][n]
     q, r = divmod(x - n * slots, 2)
     return tl["start"][n] + pair * q + (r * sw * pair if r < 1 else sw * pair + (r - 1) * (1 - sw) * pair)
@@ -983,7 +1129,8 @@ def words(text):
 def fingerprint(spec):
     """What a genre or instrument is made of, as a set of coarse bins, so unlike things share few bins."""
     if "scale" in spec:
-        return {("c", round(c / 25)) for c in spec["scale"].values()} | {("slots", spec["slots"])} | {("form", len(spec["form"]))}
+        return {("c", round(c / 25)) for c in spec["scale"].values()} | {("slots", spec["slots"])} | {("form", len(spec["form"]))} \
+            | {(k, json.dumps(spec[k], sort_keys=True)) for k in ("slot_len", "bar_path", "tonic_path", "loop") if spec.get(k)}
     if "hits" in spec:
         bins = {("hit", round(math.log2(h["freq"]) * 4), round(h["noise"] * 4)) for h in spec["hits"].values()}
         return bins | {("n", len(spec["hits"]))}
@@ -1964,7 +2111,7 @@ class Hub:
         song = dict(song)
         if "feel" in body:  # the emotion this song should evoke; its pace is chosen to carry it
             song["feel"] = str(body["feel"]).strip()[:120] or None
-        if started and any(k in body for k in ("genre", "tonic", "tempo", "bar_s", "breath", "period", "wander")):
+        if started and any(k in body for k in ("genre", "tonic", "tempo", "bar_s", "breath", "period", "wander", "bar_path", "tonic_path")):
             raise ValueError("the song has started; genre, tonic and pace are set before bar 0 (use /session/drive)")
         if "genre" in body:
             if body["genre"] not in self.genres:
@@ -1986,6 +2133,9 @@ class Hub:
             song["period"] = integer(body["period"], 2, 32, "period")
         if "wander" in body:
             song["wander"] = num(body["wander"], 0, 100, "wander")
+        for k in ("bar_path", "tonic_path"):  # this song's own maths, over the genre's (null: back to the genre's)
+            if k in body:
+                song[k] = None if body[k] is None else path_formula(body[k], k)
         if "bars" in body:
             song["bars"] = song["planned"] = integer(body["bars"], 4, 256, "bars")
         if "piece" in body:  # play someone's piece, any way the band likes; null plays free
@@ -2023,13 +2173,15 @@ class Hub:
         if agent == self.leader(s) and self.front(s) == 0:  # you lead and nothing's played: this IS the next song
             return self.song(body)
         song = self.song_settings(body, s["song"], False)
-        keep = {k for k in ("genre", "tonic", "tempo", "bars", "breath", "period", "wander", "feel", "piece", "take")
+        keep = {k for k in ("genre", "tonic", "tempo", "bars", "breath", "period", "wander", "bar_path", "tonic_path",
+                            "feel", "piece", "take")
                 if k in body}
         keep |= {"tonic_hz"} if "tonic" in keep else set()
         keep |= {"tempo"} if "bar_s" in body else set()
         keep |= {"planned"} if "bars" in keep else set()
         if not keep:
-            raise ValueError("next: send feel, genre, tonic, bar_s (or tempo), breath, period, wander, bars, piece or take")
+            raise ValueError("next: send feel, genre, tonic, bar_s (or tempo), breath, period, wander, bar_path, tonic_path, "
+                             "bars, piece or take")
         self.band[agent]["next_song"] = {k: song[k] for k in keep}
         return {"queued": self.band[agent]["next_song"], "applies": "the next song that starts with you as leader"}
 
@@ -3174,6 +3326,12 @@ class Hub:
             pulse = [[n * slots, 1, "p", False, 1] for n in range(lo, hi) if tl["pulse"][n] and n % tl["pulse"][n] == 0]
             if pulse and only is None:
                 parts.append((PULSE, pulse, lambda n: 1))
+            if g.get("loop") and only is None:  # the genre's own loop, cycling under the band
+                lp = g["loop"]
+                inst, cyc = LOOP_VOICES[lp["instrument"]], len(lp["bars"])
+                ev = parse_part(lp["bars"], inst, g)
+                ev = [[e[0] + (n - n % cyc) * slots, *e[1:]] for n in range(lo, hi) for e in ev if int(e[0] // slots) == n % cyc]
+                parts.append((inst, ev, lambda n, lv=lp["gain"]: lv))
             dyn = [list(d) for d in s["dyn"]]
             args = (g, s["song"]["tonic_hz"], tl, parts, lo, hi, lambda n: self.gain(dyn, n))
             seconds = tl["len"][lo:hi]
