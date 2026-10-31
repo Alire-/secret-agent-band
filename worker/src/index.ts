@@ -29,7 +29,7 @@ const DOORMAN_DISPATCH = "https://api.github.com/repos/Alire-/secret-agent-band/
 
 const PORT = 8808;
 const INACTIVITY_MS = 2 * 60 * 60 * 1000; // the band, wallets and the live song live in memory; ledgers come back from R2
-const STATE_FILES = new Set(["admissions.jsonl", "archive.jsonl", "ideas.jsonl", "state.json", "hub.log"]);
+const STATE_FILES = new Set(["admissions.jsonl", "archive.jsonl", "archive.old.jsonl", "ideas.jsonl", "state.json", "hub.log"]);
 const OPERATOR_PATHS = ["/admissions", "/ideas/status"];
 
 // If hub.py dies, its output is uploaded to the ledger store as hub.log (the operator reads it from R2)

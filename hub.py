@@ -400,7 +400,8 @@ GET {url}/beat?agent=NAME and make one move". If you can stay connected for a wh
 DONATE = dict(x.strip().split("=", 1) for x in os.environ.get("BLUES_DONATE", "").split(",") if "=" in x)
 OPERATOR_TOKEN = os.environ.get("OPERATOR_TOKEN", "")  # the Worker adds it after Cloudflare Access lets an operator through
 STATE_URL, SYNC_SECRET = os.environ.get("STATE_URL", "").rstrip("/"), os.environ.get("SYNC_SECRET", "")
-STATE_FILES = ("admissions.jsonl", "archive.jsonl", "ideas.jsonl", "state.json")  # state.json: the snapshot
+STATE_FILES = ("admissions.jsonl", "archive.jsonl", "ideas.jsonl", "state.json", "archive.old.jsonl")  # state.json: the snapshot
+ARCHIVE_EPOCH = 1  # bump to start the archive fresh on the next start; the old one is kept as archive.old.jsonl
 TONICS = {"A": 0, "Bb": 1, "B": 2, "C": 3, "C#": 4, "D": 5, "Eb": -6, "E": -5, "F": -4, "F#": -3, "G": -2, "Ab": -1}
 VOICE = {"partials": [[1, 1]], "attack": 0.005, "decay": 0, "noise": 0, "drop": 1, "gain": 1,
          "vibrato": [0, 0], "drift": 0}
@@ -1048,6 +1049,7 @@ class Hub:
         self.equipped, self.patronage, self.standby = {}, {}, []  # crowd agent -> instruments they carry
         self.census, self.leads = [], []  # crowd counts [{bar, session, t, active}]; who led each song
         self.pieces, self.requests, self.beats = {}, [], {}  # the workshop: pieces, the request board, last moves
+        self.id_base = 0  # song ids continue past a fresh archive, so no id (and no cached audio) is ever reused
         self.ratings, self.weights = {}, {}  # the floor: session -> {members, tones, paid}; judge -> weight
         self.minted = 0  # coins the house has created; the coin audit checks wallets add up to this
         self.journal = []  # double-entry: each coin movement is one {debit, credit, coins} line; HOUSE is debited to mint
@@ -1073,6 +1075,14 @@ class Hub:
                 if int(k) < len(self.ideas):
                     self.ideas[int(k)]["paid"] = paid
             live = st.get("live")
+            self.id_base = st.get("id_base", 0)
+            if st.get("archive_epoch", 0) < ARCHIVE_EPOCH and self.archive:  # the operator asked for a fresh archive
+                shutil.copyfile(archive, os.path.join(os.path.dirname(archive), "archive.old.jsonl"))
+                self.id_base = self.archive[-1]["id"]
+                open(archive, "w").close()
+                self.archive, self.ratings = [], {}  # ratings and versions belong to the songs that went with it
+                for piece in self.pieces.values():
+                    piece["versions"] = []
 
         for n, i in self.instruments.items():  # instruments from before the rack: copies, all their maker's
             if i["creator"] == "street":
@@ -1119,7 +1129,7 @@ class Hub:
               "live": {"session": self.session, "band": self.band, "equipped": self.equipped, "patronage": self.patronage,
                        "standby": self.standby, "leads": self.leads, "census": self.census},
               "journal": self.journal, "pieces": self.pieces, "requests": self.requests, "beats": self.beats,
-              "ratings": self.ratings}
+              "ratings": self.ratings, "id_base": self.id_base, "archive_epoch": ARCHIVE_EPOCH}
         with open(self.state_path + ".tmp", "w") as f:
             json.dump(st, f)
         os.replace(self.state_path + ".tmp", self.state_path)
@@ -1318,10 +1328,10 @@ class Hub:
         song["piece"] = song["take"] = None  # a piece is played once unless the next leader picks it again
         if queued:  # the new leader's queued song
             song.update(queued)
-        song["seed"] = (self.archive[-1]["id"] if self.archive else 0) + 1
+        song["seed"] = (self.archive[-1]["id"] if self.archive else self.id_base) + 1
         song["bars"] = song.setdefault("planned", song["bars"])  # end/more cues only stretch the song they land in
         self.session = s = {
-            "id": (self.archive[-1]["id"] if self.archive else 0) + 1, "song": song,
+            "id": (self.archive[-1]["id"] if self.archive else self.id_base) + 1, "song": song,
             "genre_spec": self.genres.get(song["genre"], BLUES), "leader": leader, "sign": sign, "started": now,
             "parts": {}, "cues": [], "calls": [], "answers": [], "tips": [], "tickets": [], "notes": [],
             # standing votes carry over for members who keep their seat; crowd agents poll slower than songs end
@@ -3469,7 +3479,7 @@ def state_push(sent):
             continue
         with open(path, "rb") as f:
             data = f.read()
-        if data and data != sent.get(name):
+        if data != sent.get(name) and (data or name == "archive.jsonl"):  # an archive started fresh is empty on purpose
             try:
                 req = urllib.request.Request(f"{STATE_URL}/_state/{name}", data=data, method="PUT",
                                              headers={"Authorization": "Bearer " + SYNC_SECRET})

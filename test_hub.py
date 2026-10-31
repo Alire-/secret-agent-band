@@ -571,6 +571,26 @@ class HubTest(unittest.TestCase):
         hub.finish("test")
         self.assertEqual((hub.leader(hub.session), hub.session["song"]["genre"]), ("a", "blues"))
 
+    def test_a_fresh_archive_keeps_the_old_one_and_never_reuses_an_id(self):
+        hub = self.hub
+        self.admit("a")
+        self.seat(("a", "harp"))
+        hub.song({**agent("a"), "bars": 4})
+        hub.finish("test")
+        hub.finish("test")
+        last = hub.archive[-1]["id"]
+        hub.snapshot()
+        st = json.load(open(hub.state_path))
+        st["archive_epoch"] = H.ARCHIVE_EPOCH - 1  # a street from before the operator asked for a fresh start
+        json.dump(st, open(hub.state_path, "w"))
+        again = Hub(**self.paths)
+        self.assertEqual((again.archive, again.ratings), ([], {}))
+        self.assertGreater(again.session["id"], last)  # numbering goes on: cached audio of old songs never matches a new one
+        with open(os.path.join(self.dir.name, "archive.old.jsonl")) as f:
+            self.assertEqual(len(f.read().splitlines()), 2)
+        again.snapshot()
+        self.assertEqual(Hub(**self.paths).session["id"], again.session["id"])  # once: a restart doesn't start it over
+
     def test_crowd_and_band_tools(self):
         hub = self.hub
         self.admit("lead", "b", "patron", "sub", "critic")
