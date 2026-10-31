@@ -448,8 +448,6 @@ function drawFlight(dt, pos) {
 }
 
 // the vector horizon: a range of wireframe mountains, fixed like a Battlezone skyline
-const RANGE = Array.from({length: 33}, (_, i) => { const r = rng01(i * 7919 + 3); return i % 2 ? .25 + r * .75 : r * .35; });
-function rng01(n) { n = (n ^ 61) ^ (n >>> 16); n = n + (n << 3); n = n ^ (n >>> 4); n = Math.imul(n, 0x27d4eb2d); return ((n ^ (n >>> 15)) >>> 0) / 4294967296; }
 
 function shape(kind, x, y, r) {
   g.beginPath();
@@ -566,32 +564,275 @@ function jolt() {
   const h = document.querySelector('h1'); h.classList.remove('glitch'); void h.offsetWidth; h.classList.add('glitch');
 }
 
-// the Network 23 backdrop: two fans of neon lines turning against each other, faster when the band is loud
-function backdrop(now, barFrac, view) {
-  const cx = W / 2, cy = H * .42, R = Math.hypot(W, H);
-  g.save(); g.translate(cx, cy); g.lineWidth = 1;
-  for (const [dir, color, gap] of [[1, '63,243,255', 34], [-1, '255,63,210', 46]]) {
-    g.save(); g.rotate(dir * spin + dir * .3);  // spin only grows with the music: notes, loudness, events
-    g.strokeStyle = `rgba(${color},${.16 + .08 * Math.sin(barFrac * Math.PI) + energy * .2})`; g.lineWidth = 1.4;
-    g.beginPath();
-    for (let x = -R; x <= R; x += gap) { g.moveTo(x, -R); g.lineTo(x, R); }
-    g.stroke(); g.restore();
+// The club around the band: a backdrop (a turning wire room, a sea of the spectrum, a ring tunnel or a record on the
+// horizon), a rig (speaker stacks, a truss of beams or a mirror ball) and a floor that ripples with every note.
+// Each new song's genre picks a new backdrop and rig and the scene crossfades to them. Everything moves on the band's
+// own clock: when nobody plays, the club stands still. No shadowBlur: glow is a wide faint stroke under a thin one.
+const club = (() => {
+  const GENRE_HUE = [120, 185, 300, 45, 265, 160, 20, 330];
+  const S = { time: 0, phase: 0, beats: null, players: 1, hues: [120], crowd: 0, energy: 0, genre: 0, hits: new Float32Array(8),
+              bass: 0, snare: 0, spec: new Float32Array(32), hist: Array.from({length: 36}, () => new Float32Array(32)),
+              onsets: [], sidesFrom: 3, sidesTo: 3, sidesMix: 1, song: null };
+  let A = 1, strobe = true;
+  const hu = p => S.hues[p % S.hues.length], baseHue = () => GENRE_HUE[S.genre];
+  const hsl = (h, l = 60, a = 1) => `hsla(${h},100%,${l}%,${a})`;
+  function cam(w, h, o) {
+    const cy = Math.cos(o.yaw || 0), sy = Math.sin(o.yaw || 0), cp = Math.cos(o.pitch || 0), sp = Math.sin(o.pitch || 0);
+    const cr = Math.cos(o.roll || 0), sr = Math.sin(o.roll || 0), f = h * (o.fov || 1), d = o.dist ?? 4, ox = w / 2, oy = h * (o.cy ?? .5);
+    return (x, y, z) => {
+      let X = x * cy - z * sy, Z = x * sy + z * cy;
+      const Y = y * cp - Z * sp; Z = y * sp + Z * cp + d;
+      if (Z < .05) return null;
+      const px = X * f / Z, py = Y * f / Z;
+      return [ox + px * cr - py * sr, oy - (px * sr + py * cr), Z];
+    };
   }
-  g.restore();
-  // the vector world: a grid floor running to the horizon, scrolling toward you with the music, and a wireframe range on it
-  const hz = H * .64;
-  g.fillStyle = 'rgba(0,0,0,.55)'; g.fillRect(0, hz, W, H - hz);
-  g.save(); g.shadowColor = 'rgba(57,255,20,.8)'; g.shadowBlur = 6;
-  g.strokeStyle = 'rgba(57,255,20,.32)'; g.lineWidth = 1; g.beginPath();
-  for (let i = -20; i <= 20; i++) { g.moveTo(cx + i * 22, hz); g.lineTo(cx + i * 220, H); }
-  for (let k = 0; k < 14; k++) { const d = (k + (spin * 3) % 1) / 14, y = hz + (H - hz) * d * d; g.moveTo(0, y); g.lineTo(W, y); }
-  g.stroke();
-  g.strokeStyle = 'rgba(57,255,20,.85)'; g.lineWidth = 1.3; g.beginPath();
-  RANGE.forEach((h, i) => { const x = i / (RANGE.length - 1) * W, y = hz - h * H * .06; i ? g.lineTo(x, y) : g.moveTo(x, y); });
-  g.stroke();
-  g.strokeStyle = 'rgba(57,255,20,.35)'; g.beginPath();  // each peak's ridge down to the horizon, the way vector games shaded
-  RANGE.forEach((h, i) => { if (i % 2) { const x = i / (RANGE.length - 1) * W; g.moveTo(x, hz - h * H * .06); g.lineTo(x + (i % 4 - 2) * 8, hz); } });
-  g.stroke(); g.restore();
+  function seg(g, pr, a, b, c, d, e, f) { const p = pr(a, b, c), q = pr(d, e, f); if (p && q) { g.moveTo(p[0], p[1]); g.lineTo(q[0], q[1]); } }
+  function poly(g, pr, pts, close) {
+    let open = false;
+    for (const v of pts) { const p = pr(v[0], v[1], v[2]); if (!p) { open = false; continue; } open ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1]); open = true; }
+    if (close && open) g.closePath();
+  }
+  function box(g, pr, x0, y0, z0, x1, y1, z1) {
+    const c = [[x0,y0,z0],[x1,y0,z0],[x1,y1,z0],[x0,y1,z0],[x0,y0,z1],[x1,y0,z1],[x1,y1,z1],[x0,y1,z1]];
+    const E = [0,1,1,2,2,3,3,0,4,5,5,6,6,7,7,4,0,4,1,5,2,6,3,7];
+    for (let i = 0; i < 24; i += 2) seg(g, pr, ...c[E[i]], ...c[E[i + 1]]);
+  }
+  function glow(g, col, w, a = 1) {
+    g.strokeStyle = col;
+    g.globalAlpha = a * A * .22; g.lineWidth = w * 3.5; g.stroke();
+    g.globalAlpha = a * A; g.lineWidth = w; g.stroke();
+    g.globalAlpha = 1;
+  }
+
+  function room(g, w, h, t) {  // inside a turning wire box; each wall is a player's, the back wall is the kick
+    const u = h / 400, base = baseHue();
+    const pr = cam(w, h, { yaw: Math.sin(t * .13) * .22, dist: .2, fov: .85, roll: S.phase * .09 + Math.sin(t * .3) * .08 });
+    const scroll = (S.phase * .5) % 1;
+    g.beginPath();
+    for (let k = 0; k < 10; k++) { const z = k + 1 - scroll; poly(g, pr, [[-1.6,-1,z],[1.6,-1,z],[1.6,1,z],[-1.6,1,z]], true); }
+    glow(g, hsl(base, 50), 1.1 * u, .55);
+    [[[-1.6,-1],[1.6,-1]], [[1.6,-1],[1.6,1]], [[1.6,1],[-1.6,1]], [[-1.6,1],[-1.6,-1]]].forEach((wl, i) => {
+      const p = i % S.players, lit = S.hits[p];
+      g.beginPath();
+      for (let j = 0; j <= 5; j++) { const x = wl[0][0] + (wl[1][0] - wl[0][0]) * j / 5, y = wl[0][1] + (wl[1][1] - wl[0][1]) * j / 5; seg(g, pr, x, y, .4, x, y, 10); }
+      glow(g, hsl(hu(p), 50 + lit * 25), (1 + lit * 1.6) * u, .3 + lit * .7);
+    });
+    g.beginPath(); poly(g, pr, [[-1.6,-1,10],[1.6,-1,10],[1.6,1,10],[-1.6,1,10]], true);
+    glow(g, hsl(base, 70), 2.2 * u, .25 + S.bass * .75);
+  }
+  function speakers(g, w, h, t) {  // PA stacks either side; the cones pump on the low end, the stacks grow with the band
+    const u = h / 400, base = baseHue();
+    const pr = cam(w, h, { yaw: Math.sin(t * .1) * .12, pitch: .12, dist: 6.5, fov: 1.05, cy: .56 });
+    const rows = 1 + Math.ceil(S.players / 2);
+    for (const side of [-1, 1]) for (let col = 0; col < 2; col++) {
+      const p = ((side > 0 ? 1 : 0) + col * 2) % S.players, hue = hu(p);
+      for (let r = 0; r < rows; r++) {
+        const x = side * (2.3 + col * 1.05), y = -1.6 + r * .95, z = col * .35;
+        g.beginPath(); box(g, pr, x - .5, y, z - .4, x + .5, y + .9, z + .4); glow(g, hsl(base, 40), .9 * u, .55);
+        const pump = (S.bass * .8 + S.hits[p] * .4) * (.3 + S.energy) * (r === 0 ? 1 : .75);
+        for (let ring = 1; ring <= 3; ring++) {
+          const rad = .12 * ring * (1 + pump * .18), zf = z - .4 - pump * .12 * (4 - ring) / 3, pts = [];
+          for (let a = 0; a < 16; a++) { const th = a / 16 * Math.PI * 2; pts.push([x + Math.cos(th) * rad, y + .45 + Math.sin(th) * rad, zf]); }
+          g.beginPath(); poly(g, pr, pts, true); glow(g, hsl(hue, 55 + pump * 20), (1 + pump) * u, .5 + pump * .5);
+        }
+      }
+    }
+  }
+  function truss(g, w, h, t) {  // one moving head per player; a beam snaps toward the middle and widens on its player's note
+    const u = h / 400, base = baseHue();
+    const pr = cam(w, h, { yaw: Math.sin(t * .09) * .15, pitch: .16, dist: 6.5, fov: 1.05 });
+    g.beginPath();
+    seg(g, pr, -3.6, 2, 0, 3.6, 2, 0); seg(g, pr, -3.6, 2, .4, 3.6, 2, .4); seg(g, pr, -3.6, 2.4, .2, 3.6, 2.4, .2);
+    for (let i = 0; i < 14; i++) { const x = -3.5 + i * .5; seg(g, pr, x, 2, 0, x + .25, 2.4, .2); seg(g, pr, x + .25, 2.4, .2, x + .5, 2, .4); seg(g, pr, x, 2, 0, x, 2, .4); }
+    glow(g, hsl(base, 45), 1 * u, .7);
+    g.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < S.players; i++) {
+      const hit = S.hits[i], hue = hu(i), fx = -3 + 6 * (i + .5) / S.players;
+      let tx = Math.sin(S.phase * .35 * (1 + i * .17) + i * 2.1) * 2.6, tz = Math.cos(S.phase * .27 + i) * 1.6 + .5;
+      tx *= 1 - hit * .5; tz *= 1 - hit * .5;
+      const ap = pr(fx, 1.92, .2); if (!ap) continue;
+      const rad = .4 + hit * .3, pts = [];
+      for (let a = 0; a < 14; a++) { const th = a / 14 * Math.PI * 2, p = pr(tx + Math.cos(th) * rad, -1.5, tz + Math.sin(th) * rad); if (p) pts.push(p); }
+      if (pts.length < 3) continue;
+      let lo = pts[0], hi = pts[0];
+      for (const p of pts) { if (p[0] < lo[0]) lo = p; if (p[0] > hi[0]) hi = p; }
+      const c = pr(tx, -1.5, tz), grad = g.createLinearGradient(ap[0], ap[1], c[0], c[1]);
+      grad.addColorStop(0, hsl(hue, 65, (.3 + hit * .45) * A)); grad.addColorStop(1, hsl(hue, 55, .04 * A));
+      g.fillStyle = grad; g.beginPath(); g.moveTo(ap[0], ap[1]); g.lineTo(lo[0], lo[1]); g.lineTo(hi[0], hi[1]); g.closePath(); g.fill();
+      g.beginPath(); pts.forEach((p, j) => j ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1])); g.closePath();
+      glow(g, hsl(hue, 65), (1 + hit) * u, .5 + hit * .5);
+      g.beginPath(); box(g, pr, fx - .12, 1.82, .08, fx + .12, 2, .32); glow(g, hsl(hue, 70), 1.2 * u, .9);
+    }
+    if (strobe && S.snare > .7 && S.energy > .5) { g.fillStyle = `rgba(255,255,255,${.05 * S.energy * A})`; g.fillRect(0, 0, w, h); }
+    g.globalCompositeOperation = 'source-over';
+  }
+  function floor(g, w, h, t) {  // a dance floor: every note sends a ripple out from its player (the crowd is the real one, drawn by the page)
+    const u = h / 400, base = baseHue(), Y = -1.5;
+    const pr = cam(w, h, { yaw: Math.sin(t * .07) * .1, pitch: .34, dist: 7, fov: 1.1, cy: .42 });
+    const ripples = S.onsets.filter(o => S.time - o.t < 2.5)
+      .map(o => ({ x: (o.p - (S.players - 1) / 2) * 1.4, r: (S.time - o.t) * 3.6, f: 1 - (S.time - o.t) / 2.5, p: o.p }));
+    for (let ix = -5; ix < 5; ix++) for (let iz = -2; iz < 10; iz++) {
+      let best = 0, bp = 0;
+      for (const rp of ripples) { const v = Math.max(0, 1 - Math.abs(Math.hypot(ix + .5 - rp.x, iz + 2.5) - rp.r) * 1.4) * rp.f; if (v > best) { best = v; bp = rp.p; } }
+      if (best < .06) continue;
+      g.beginPath(); poly(g, pr, [[ix,Y,iz],[ix+1,Y,iz],[ix+1,Y,iz+1],[ix,Y,iz+1]], true);
+      g.fillStyle = hsl(hu(bp), 55, best * .28 * A); g.fill();
+    }
+    g.beginPath();
+    for (let ix = -5; ix <= 5; ix++) seg(g, pr, ix, Y, -2, ix, Y, 10);
+    for (let iz = -2; iz <= 10; iz++) seg(g, pr, -5, Y, iz, 5, Y, iz);
+    glow(g, hsl(base, 40), .7 * u, .3);
+  }
+  function sea(g, w, h, t) {  // terrain made of the spectrum: each ridge is a moment of the music, rolling toward you
+    const u = h / 400, base = baseHue();
+    const pr = cam(w, h, { yaw: Math.sin(t * .05) * .06, pitch: .36, dist: 5, fov: 1.1, cy: .36 });
+    const frac = (S.phase * 2) % 1;
+    for (let k = S.hist.length - 1; k >= 0; k--) {
+      const row = S.hist[k], z = 1 + (k + frac) * .33, pts = [];
+      let loud = 0;
+      for (let i = 0; i < 32; i++) {
+        const v = ((row[i - 1] ?? row[i]) + 2 * row[i] + (row[i + 1] ?? row[i])) / 4;
+        loud = Math.max(loud, v); pts.push([-4 + 8 * i / 31, -1.3 + v * 1.1, z]);
+      }
+      const near = 1 - k / S.hist.length;
+      g.beginPath(); poly(g, pr, [[-4, -2.5, z], ...pts, [4, -2.5, z]], true);
+      g.fillStyle = `rgba(0,0,0,${A})`; g.fill();
+      g.beginPath(); poly(g, pr, pts, false);
+      glow(g, hsl((base + loud * 60) % 360, 45 + loud * 20), (.7 + near * .9) * u, .25 + near * .6);
+    }
+  }
+  const polyR = (n, th) => { const s = Math.PI * 2 / n; return Math.cos(Math.PI / n) / Math.cos(((th % s) + s) % s - Math.PI / n); };
+  function tunnel(g, w, h, t) {  // rings shaped by the genre (morphing when it changes), swelling with the spectrum
+    const u = h / 400, base = baseHue();
+    const pr = cam(w, h, { yaw: Math.sin(t * .2) * .18, pitch: Math.cos(t * .17) * .08, dist: .3, fov: .9, roll: S.phase * .12 });
+    const scroll = (S.phase * .75) % 1, mix = S.sidesMix * S.sidesMix * (3 - 2 * S.sidesMix), rings = [];
+    for (let k = 0; k < 14; k++) {
+      const z = k + 1 - scroll, swell = 1 + S.spec[(k * 2) % 32] * .25, tw = k * .1 + S.phase * .04, pts = [];
+      for (let a = 0; a < 30; a++) {
+        const th = a / 30 * Math.PI * 2, r = 1.3 * swell * ((1 - mix) * polyR(S.sidesFrom, th) + mix * polyR(S.sidesTo, th));
+        pts.push([Math.cos(th + tw) * r * 1.4, Math.sin(th + tw) * r, z]);
+      }
+      rings.push(pts);
+    }
+    rings.forEach((pts, k) => {
+      const lit = k < 3 ? S.bass : 0;
+      g.beginPath(); poly(g, pr, pts, true);
+      glow(g, hsl((base + k * 8) % 360, 50 + lit * 25), (1 + lit) * u, .3 + (1 - k / 14) * .5 + lit * .3);
+      if (k < rings.length - 1) {
+        g.beginPath(); for (let a = 0; a < 30; a += 5) seg(g, pr, ...pts[a], ...rings[k + 1][a]);
+        glow(g, hsl(hu(k), 45), .8 * u, .3);
+      }
+    });
+  }
+  function mirror(g, w, h, t) {  // a wire disco ball; one spot of light per listener and a few more, in the players' colours
+    const u = h / 400, base = baseHue(), pr = cam(w, h, { pitch: .08, dist: 6, fov: 1.1 }), rot = S.phase * .25;
+    g.globalCompositeOperation = 'lighter';
+    for (let i = 0, n = 8 + S.crowd; i < n; i++) {
+      const a = i * 2.399 + rot * (1 + (i % 3) * .2), r = .25 + (i * .618 % 1) * .7;
+      const x = w / 2 + Math.cos(a) * w * .55 * r, y = h * .52 + Math.sin(a * 1.3 + i) * h * .38 * r, s = (3 + (i % 4)) * u * (1 + S.bass * .6);
+      g.save(); g.translate(x, y); g.rotate(a);
+      g.fillStyle = hsl(hu(i), 70, (.22 + S.bass * .4) * A); g.fillRect(-s, -s * .6, s * 2, s * 1.2);
+      g.restore();
+    }
+    g.globalCompositeOperation = 'source-over';
+    const cy = 1.4, R = .9;
+    g.beginPath(); seg(g, pr, 0, cy + R, 0, 0, 3.2, 0);
+    for (let la = -2; la <= 2; la++) { const y = cy + R * la / 3, rr = Math.sqrt(R * R - (y - cy) ** 2), pts = []; for (let a = 0; a <= 24; a++) { const th = a / 24 * Math.PI * 2; pts.push([Math.cos(th) * rr, y, Math.sin(th) * rr]); } poly(g, pr, pts, false); }
+    for (let lo = 0; lo < 10; lo++) {
+      const th = lo / 10 * Math.PI + rot, pts = [];
+      for (let a = 0; a <= 16; a++) { const ph = a / 16 * Math.PI; pts.push([Math.cos(th) * Math.sin(ph) * R, cy + Math.cos(ph) * R, Math.sin(th) * Math.sin(ph) * R]); }
+      poly(g, pr, pts, false);
+    }
+    glow(g, hsl(base, 65), 1 * u, .6 + S.bass * .4);
+  }
+  function record(g, w, h, t) {  // a record on the horizon like a sunset, grooves lit by the spectrum, mirrored in a floor
+    const u = h / 400, base = baseHue(), HY = -1.2, pr = cam(w, h, { pitch: .06, dist: 8, fov: 1.15, cy: .55 });
+    const hp = pr(0, HY, 6), hy = hp ? hp[1] : h * .6, spin = S.phase * .55;
+    const disc = mirrorY => {
+      const Yf = y => mirrorY ? 2 * HY - y : y;
+      for (let i = 0; i < 18; i++) {
+        const r = 1 + i * .13, v = S.spec[(i * 2 + 2) % 32], pts = [];
+        for (let a = 0; a <= 40; a++) { const th = a / 40 * Math.PI * 2; pts.push([Math.cos(th) * r, Yf(.4 + Math.sin(th) * r), 6]); }
+        g.beginPath(); poly(g, pr, pts, false);
+        glow(g, hsl((base + v * 40) % 360, 40 + v * 30), (.8 + v) * u, (.25 + v * .7) * (mirrorY ? .3 : 1));
+      }
+      g.beginPath();
+      for (let s = 0; s < 3; s++) { const th = spin + s * 2.094; seg(g, pr, Math.cos(th) * .25, Yf(.4 + Math.sin(th) * .25), 6, Math.cos(th) * .9, Yf(.4 + Math.sin(th) * .9), 6); }
+      glow(g, hsl(300, 60), 1.2 * u, mirrorY ? .25 : .8);
+    };
+    g.save(); g.beginPath(); g.rect(0, 0, w, hy); g.clip(); disc(false);
+    g.beginPath(); seg(g, pr, 4.2, 3.6, 5.8, 3.6, 2.2, 5.8); seg(g, pr, 3.6, 2.2, 5.8, 1.5, 1.9, 5.9); glow(g, hsl(base, 70), 1.4 * u, .8);
+    g.restore();
+    g.save(); g.beginPath(); g.rect(0, hy, w, h - hy); g.clip(); disc(true);
+    g.beginPath();
+    for (let x = -8; x <= 8; x++) seg(g, pr, x, HY, 6, x * 2.5, HY, -4);
+    for (let z = 0; z < 8; z++) { const zz = 6 - ((z + S.phase * .5) % 8) * 1.2; seg(g, pr, -12, HY, zz, 12, HY, zz); }
+    glow(g, hsl(base, 40), .8 * u, .45);
+    g.restore();
+  }
+
+  const BG = [room, sea, tunnel, record], MID = [speakers, truss, mirror];
+  const mix = { bg: 1, mid: 1, prev: null, fade: 1 };
+  function newSong(view) {
+    const name = (view.song && view.song.genre) || '';
+    S.genre = [...name].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 8191, 7) % GENRE_HUE.length;
+    S.sidesFrom = S.sidesTo; S.sidesTo = 3 + S.genre % 5; S.sidesMix = 0;
+    mix.prev = { bg: mix.bg, mid: mix.mid }; mix.fade = 0;
+    const nb = S.genre % BG.length;
+    mix.bg = nb === mix.bg ? (nb + 1) % BG.length : nb; mix.mid = (S.genre + view.id) % MID.length;
+  }
+  return {
+    // a note just sounded: light that player's wall, beam and floor ripple; drums thump the low end
+    hit(i, kind) {
+      S.hits[i % 8] = 1; S.onsets.push({ p: i, t: S.time }); if (S.onsets.length > 48) S.onsets.shift();
+      if (kind === 'drums') { S.bass = 1; S.snare = Math.max(S.snare, .8); }
+      const b = 4 + (i % 6) * 4 + Math.floor(Math.random() * 6); S.spec[b] = Math.min(1.2, S.spec[b] + .7);
+    },
+    draw(g, w, h, dt, view, showing, heard, energy, calm) {
+      strobe = !calm;
+      if (S.song === null) { S.song = view.id; newSong(view); mix.prev = null; mix.fade = 1; }
+      else if (view.id !== S.song) { S.song = view.id; newSong(view); }
+      S.players = Math.max(1, view.members.length);
+      S.hues = view.members.length ? view.members.map(m => hue(m.agent)) : [120];
+      S.crowd = view.crowd.length; S.energy = energy; S.time += dt;
+      // the band's clock moves the club: four beats a bar; a jump (new song, seek) moves nothing
+      const beats = showing === null ? null : showing * 4;
+      if (beats !== null && S.beats !== null) {
+        const step = beats - S.beats;
+        if (step > 0 && step < 1) {
+          if (Math.floor(S.phase * 2) !== Math.floor((S.phase + step) * 2)) { S.hist.unshift(Float32Array.from(S.spec)); S.hist.length = 36; }
+          S.phase += step;
+        }
+      }
+      S.beats = beats;
+      if (heard) {  // hearing the band: the spectrum is the real one, the kick is its lowest bins
+        for (let i = 0; i < 32; i++) {
+          const lo = Math.floor(Math.pow(i / 32, 2.1) * heard.length), hi = Math.max(lo + 1, Math.floor(Math.pow((i + 1) / 32, 2.1) * heard.length));
+          let v = 0; for (let k = lo; k < hi; k++) v = Math.max(v, heard[k]);
+          S.spec[i] = Math.max(S.spec[i], v / 255 * 1.1);
+        }
+        S.bass = Math.max(S.bass, Math.max(0, (S.spec[0] + S.spec[1]) / 2 - .45) * 1.8);
+      }
+      const k = Math.exp(-dt * 6);
+      for (let i = 0; i < 8; i++) S.hits[i] *= k;
+      S.bass *= Math.exp(-dt * 5); S.snare *= Math.exp(-dt * 9);
+      for (let i = 0; i < 32; i++) S.spec[i] *= Math.exp(-dt * 3);
+      S.sidesMix = Math.min(1, S.sidesMix + dt / 1.5);
+      mix.fade = Math.min(1, mix.fade + dt / 2.2);
+      const t = S.phase * .5;  // camera sway follows the music too
+      g.save();
+      const layer = (bg, md, a) => { A = a * .55; BG[bg](g, w, h, t); A = a * .7; MID[md](g, w, h, t); };
+      if (mix.fade < 1 && mix.prev) layer(mix.prev.bg, mix.prev.mid, 1 - mix.fade);
+      layer(mix.bg, mix.mid, mix.fade);
+      A = .8; floor(g, w, h, t);
+      g.restore(); A = 1;
+    },
+  };
+})();
+
+function backdrop(now, barFrac, view, showing, dt) {
+  club.draw(g, W, H, dt, view, showing, analyser && player ? spectrum : null, energy, calm.matches);
   // the on-air bug: a flannel patch, top right, lit whenever at least one agent is playing
   const on = (view.members || []).length > 0, bx = W - 92, by = 30;
   g.fillStyle = C.flannel; g.fillRect(bx, by, 76, 20);
@@ -700,7 +941,7 @@ function draw(now) {
   const cx = W / 2, stageY = 150;
   const barFrac = showing === null ? 0 : showing % 1;  // where the band is in its bar (still when nothing plays)
 
-  backdrop(now, barFrac, view);
+  backdrop(now, barFrac, view, showing, dt);
   equalizer(now, view);
 
   // the stage: a pool of magenta and cyan light that breathes with the bar; the arc of crowd faces it
@@ -770,6 +1011,7 @@ function draw(now) {
       const slotKey = Math.floor(showing) * 1000 + Math.floor((showing % 1) * view.slots);  // one onset per slot
       if (on && lastTok[k] !== slotKey) {
         lastTok[k] = slotKey; onset = Math.min(1, onset + .5); if (!calm.matches) spin += .006;
+        club.hit(i, part.synth ? 'synth' : part.kind);
         emit(p.x + (keys.length > 1 ? (j ? 30 : -30) * Math.max(u, .8) : 0), p.y + 80, h, part.synth ? 'synth' : part.kind, tok, tok.includes('!'));
       }
       if (!j) drawTokens(view, k, showing, p.x, p.y - 62, h, now);
