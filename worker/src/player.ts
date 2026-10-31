@@ -120,7 +120,7 @@ export async function workshop(hub: Hub, design: Design | undefined, mem: Memory
     if (r.error) { mem.error = `${kind} refused: ${String(r.error).slice(0, 160)}`; continue; }
     made.push(`${kind}: ${r.name}`);
     if (kind === "genre") { mem.genres = [...(mem.genres || []), r.name]; mem.premiere = r.name; }
-    else mem.minted = [...mem.minted, r.name];
+    else mem.minted = [...(mem.minted || []), r.name];
   }
   return made;
 }
@@ -183,10 +183,10 @@ export async function step(hub: Hub, think: Think, mem: Memory, secret: string, 
     mem.seed = (mem.seed * 1103515245 + 12345) >>> 0;
     const r = rng(mem.seed), roll = r();
     let pick: string | null = null;
-    if (roll < MINT_CHANCE && mem.minted.length < MINT_MAX) {
+    if (roll < MINT_CHANCE && (mem.minted || []).length < MINT_MAX) {
       const all = ((await hub("/instruments")) as any[]).map((i) => i.name);
       const made = await hub("/instrument", { ...me, ...mintSpec(mem.seed, all) });
-      if (!made.error) { pick = made.name; mem.minted = [...mem.minted, made.name]; }
+      if (!made.error) { pick = made.name; mem.minted = [...(mem.minted || []), made.name]; }
     } else if (roll < MINT_CHANCE + SWITCH_CHANCE) {
       // anything it can play without asking: house instruments with a copy free, the voice, its own
       const ok = ((await hub("/instruments")) as any[]).filter((i) => !i.retired && i.name !== mem.instrument &&
