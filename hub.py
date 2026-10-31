@@ -1689,6 +1689,8 @@ class Hub:
                               key=lambda m: scores[m]["score"])
         queue = self.seat_queue(s)
         for row in [p for p in queue["patrons"] if p["counted"]]:
+            if self.open_seats() > 0:  # a patron can just take an open seat: nobody is cut for them (Velarisk)
+                break
             out = next(iter(weak()), None)
             if out is None:
                 continue

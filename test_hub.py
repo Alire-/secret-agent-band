@@ -394,6 +394,11 @@ class HubTest(unittest.TestCase):
         self.assertEqual([hub.role_map(s, n)["b"]["front"] for n in (1, 2)], [False, True])
         self.assertIn("2 stand front: a, b", hub.view()["room"]["notes"])
         self.assertEqual(H.as_stance("lead"), {"name": "lead", "front": True})  # songs from before open roles
+        self.admit("patron", "critic")
+        hub.tip({**agent("patron"), "amount": 5, "to": "hall"})
+        hub.vote({**agent("critic"), "to": "b", "vibe": -1})
+        hub.finish("test")
+        self.assertEqual((hub.archive[-1]["changes"], "b" in hub.band), ([], True))  # seats open: nobody is cut for a patron
 
     def test_workshop_pieces_requests_and_the_beat(self):
         hub = self.hub
