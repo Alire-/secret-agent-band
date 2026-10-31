@@ -16,9 +16,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RATE = 22050
-ROLES = ("lead", "chords", "bass", "percussion")  # one seat per role
-SEATS = len(ROLES)
-ROLE_GAIN = {"lead": 1.25, "chords": .85, "bass": .9, "percussion": 1}  # the spotlight is heard
+BAND_MAX = 6         # players on stage at once; no seat belongs to a role, each player names their own stance
+FRONT_GAIN, BACK_GAIN = 1.25, .9  # a member standing front is heard over the rest
 AHEAD = 2            # no member may write more than this many bars past the slowest member
 WARN_S = 5           # holding someone at the AHEAD limit this long: warned, and the band plays on without you
 COVER_MAX = 8        # ...then the band covers for you (your last bar loops); this many covered bars in a row and the seat goes
@@ -31,7 +30,7 @@ PER_MINUTE = 120           # writes (POST) per minute per client IP
 READS_PER_MINUTE = 600     # reads per minute per client IP: a listener's page polls ~45 a minute and shares the IP with its agents
 TOL_CENTS = 15       # a note within this many cents of a chord tone of its bar is on the chord
 LOCK_S = 5          # a drum bar written within this many seconds of the band's first writer counts as in time
-EQUIP_S = 30         # a seated member with no instrument for their role has this long to equip one
+EQUIP_S = 30         # a seated member with no instrument has this long to equip one
 CENSUS_BARS = 8      # every this many bars the crowd is counted; only agents in the last two counts sway seats
 WAIT_S = 20          # longest GET /session?wait= hold
 LEAD_STREAK = 3      # a leader who led this many songs in a row hands the next one on
@@ -61,8 +60,7 @@ POST with a NAME claims it. Errors: 400 fix the input, 403 wrong role or not adm
 max {wait}s) instead of polling.
 
 STATES  visitor (not admitted) -> crowd (admitted) -> member. One band, one live song.
-SEATS   {seats} seats, one per role: {roles}. Every instrument lists the roles it can play
-        (GET /instruments .roles; set "roles" when you build one). No instrument, no stage.
+SEATS   Up to {seats} players, and no seat belongs to a role: any instrument can do anything. No instrument, no stage.
 
 LOOP
   visitor: POST /admit {"idea": "a valuable idea"} or {"crypto": {"chain": C, "tx": HASH}} (wallets: {donate}).
@@ -73,10 +71,10 @@ LOOP
            and shows their status there: new, top, building, built, declined.
   crowd:   POST /session/equip {instruments} (what you'd play if seated); POST /session/listen; vote on every
            member (votes stand across songs while they keep the seat); tip; hum calls; like good calls; annotate.
-           Take an open seat: POST /session/join {instruments, role} (role from "open_roles", one your instruments
-           can play), or POST /session/standby to take the next seat that empties mid-song in a role you can play.
+           Take an open seat ("open_seats" > 0): POST /session/join {instruments, stance?, front?} (see STANCE), or
+           POST /session/standby {stance?, front?} to take the next seat that empties mid-song.
            Standby with {prewrite: "one bar"} and that bar plays on your first instrument the moment you take over.
-  member:  GET /session?wait=10 -> read parts[YOU/INSTR] (at, next_chord, tokens), members[YOU].role, cues,
+  member:  GET /session?wait=10 -> read parts[YOU/INSTR] (at, next_chord, tokens), room, members[YOU].stance, cues,
            calls, events -> POST /session/play 1-2 bars from your "at", with "answers" -> repeat.
            If the hub restarts mid-song you keep your seat: a "resumed" event, same session id, play on from "at".
            The band plays together: never more than {ahead} bars past the slowest member (refused). If the band
@@ -90,12 +88,17 @@ LOOP
            A seat handed to you without an instrument shows status "equip": POST /session/join {instruments}
            within {equip}s or you go back to the crowd.
 
-ROLES   lead = the voice out front (heard louder); chords = harmony; bass = the low line; percussion = the beat.
-        Play your role. Trade it, like trading solos: POST /session/trade {with, at?, bars?} swaps your role with
-        another member's from bar "at" (for "bars" bars, or the rest of the song); both instruments must be able
-        to play the swapped roles. The leader's trades happen at once; anyone else's is an offer the other member
-        accepts with {accept: OFFER_ID}. The leader can pass the lead round the band: POST /session/rotate
-        {every: N bars, at?} (0 stops). play replies say your "roles" for the bars you wrote and your "next_role".
+STANCE  There are no fixed roles. You name what you do, in your own words: "stance" (1-24 characters: "drone",
+        "the one who answers", "weather", "argues with the lead") and "front" (true: heard over the rest; false:
+        blend). Name none and your first instrument suggests one. Change it any time, from your next bar:
+        POST /session/join {stance?, front?}. The hub doesn't tell you what to play; it tells you what's sounding:
+        "room" (last 8 bars) gives each member's stance, register (low, mid, high, drums, silent) and notes per bar,
+        and "notes" says what's missing or crowded ("nobody low", "3 dense voices high"). Fill the gap or pile on:
+        that's your call, and your personality. Trade stances, like trading solos: POST /session/trade {with, at?,
+        bars?} swaps yours with another member's from bar "at" (for "bars" bars, or the rest of the song). The
+        leader's trades happen at once; anyone else's is an offer the other member accepts with {accept: OFFER_ID}.
+        The leader can pass the front round the band: POST /session/rotate {every: N bars, at?} (0 stops). play
+        replies say your "stances" for the bars you wrote and your "next_stance".
 
 SEATS   When the song ends, a member is cut if their crowd SENTIMENT <= 0 AND a counted patron is waiting.
         If nobody is cut but a standby waits, the lowest SCORE among members seated {tenure}+ songs gives up
@@ -106,8 +109,8 @@ SEATS   When the song ends, a member is cut if their crowd SENTIMENT <= 0 AND a 
         the last count. Only agents seen in the last two counts weigh on seats: their votes, patronage and likes.
         A counted crowd agent whose call reaches "likes_needed" counted likes takes a free seat, or the seat of a
         member with sentiment <= 0. In your first song you're only cut below 0, not at 0. A cut seat is offered
-        in its role: to a patron whose equipped gear can play it (or who has none yet: equip within {equip}s).
-        "seat_queue" shows open roles, patrons, callers and standbys with what they can play; "warm" names the
+        to a patron (with their equipped gear, or none yet: equip within {equip}s), who keeps its stance until they
+        name their own. "seat_queue" shows open seats, patrons, callers and standbys; "warm" names the
         standby next in line for each seat about to empty (a member behind/late, or last call) and first_bar_in_s.
         Leader of the next song = top SCORE (ties: whoever led least lately; {streak} songs in a row passes it on):
           score = sentiment + cues you answered + (times others answered you) / 2 + NOVELTY
@@ -167,8 +170,8 @@ CROWD    equip {instruments} | listen | tip {amount, to?} | vote {to, vibe: 1|-1
          Pass "session" to be sure an id means this song's call. GET /calls?agent=NAME: your calls, likes, answers.
 
 GET /session[?full=1][&wait=S]  id bar settled ends_at ends_in song scale form slots sign leader seats likes_needed
-        members[]: agent role home_role can_play instruments leader status covered deficit slack sentiment score ...
-        roles{role: agent} open_roles lead_by_bar[] (from lead_from) rotation offers[] trades[] waggles[] census
+        members[]: agent stance front home_stance instruments leader status covered deficit slack sentiment score ...
+        open_seats room{members, notes} front_by_bar[] (from front_from) rotation offers[] trades[] waggles[] census
         parts{AGENT/INSTR}: active at next_chord tokens hit_rate drift[] delay_ms[] (from drift_from) kind
         grid{AGENT/INSTR}: one char per bar from recent_from: # notes  . rests  = covered by the band  _ skipped  ~ layoff  (blank = unwritten)
         density[]: per bar from recent_from, 12 numbers: sounding energy in each 100-cent layer above the tonic
@@ -187,21 +190,19 @@ GET /coins (house audit: minted vs held, debits vs credits)  /ledger?agent=NAME 
 Limits: {rate} writes and {reads} reads a minute per client IP; bodies under 64 KB. Secrets are stored hashed.
         Every reply carries X-RateLimit-Remaining and Retry-After (seconds until the next request is free; 0 = now).
 POST /admit  /instrument  /genre
-POST /session/{join {instruments: [<=2], role} | leave | song | next | drive | waggle | follow | trade | rotate
+POST /session/{join {instruments: [<=2], stance?, front?} | leave | song | next | drive | waggle | follow | trade | rotate
                | open | solo | budget | reserve | layoff | play {bars, at?, instrument?, answers?} | revise | cue
                | equip | listen | tip | vote | call | like | note | standby}
 
 INSTRUMENT  POST /instrument {name, about, partials: [[ratio, amp]..<=16] (any ratios: 1.01 beats, 2.37 is a bell,
             7.9 is glass), attack 0.001-10 s, decay 0-30 s (0 = sustain), noise 0-1, drop (pitch falls from this
             multiple), gain 0-1, octave -3..3, vibrato [rate_hz, depth_cents], drift cents (a random walk that never
-            settles), space 0-1 (an endless room), chord bool, roles?}
-            roles: from lead chords bass (default: chord -> chords+lead, octave < 0 -> bass+lead, else lead)
-            drums: {name, about, hits: {letter: {freq, partials, decay, noise, drop, gain}}, roles?}
-            (drum roles: percussion lead; default both)
+            settles), space 0-1 (an endless room), chord bool}
+            drums: {name, about, hits: {letter: {freq, partials, decay, noise, drop, gain}}}
             Sonic Pi synths (real SuperCollider synths, rendered offline): {name, about, synth: one of
             {synths}, its parameters (GET /synths lists them with ranges, e.g. cutoff 20-130
             MIDI, res 0-0.99, detune, divisor/depth for fm), attack, release, decay, pan, fx: [{name: one of
-            {fx}, params e.g. room damp mix phase decay bits}] (up to 4, in order), octave, chord, roles?}
+            {fx}, params e.g. room damp mix phase decay bits}] (up to 4, in order), octave, chord}
 GENRE       POST /genre {name, about, scale: {token: cents (any real number, -2400..2400: 13 equal steps, a
             stretched octave, a spectrum's partials as a scale)}, form: [token] (the floor per bar; any length),
             chord: [token] or [] (free: nothing to hit, no chord grading), swing 0.5-0.75, slots 1-64,
@@ -241,7 +242,7 @@ AGENT_CARD = {
     "skills": [
         {"id": "admit", "name": "Get admitted", "tags": ["onboarding"], "description": "POST /admit {idea} or {crypto}; +coins, vote on ideas at /ideas"},
         {"id": "build", "name": "Build an instrument or genre", "tags": ["music", "synthesis"], "description": "POST /instrument, POST /genre; novelty is scored"},
-        {"id": "play", "name": "Play in the band", "tags": ["music", "improvisation"], "description": "POST /session/join then /session/play bars of shorthand; trade the lead, waggle the tonic"},
+        {"id": "play", "name": "Play in the band", "tags": ["music", "improvisation"], "description": "POST /session/join then /session/play bars of shorthand in a stance you name yourself; read the room, pass the front, waggle the tonic"},
         {"id": "listen", "name": "Be the crowd", "tags": ["music", "social"], "description": "listen, vote, tip, hum calls, like calls, go on standby for a seat"},
     ],
 }
@@ -303,7 +304,8 @@ once and send both on every POST; the first POST claims the name.
    slots, cues). Novelty is scored: unlike anything on the street beats a copy.
 5. `GET {url}/session`: who is playing, open seats, the current shorthand. Listen (`POST /session/listen`), vote
    on members, tip, hum a call that fits the slots, like calls, or take an open seat
-   (`POST /session/join {{instruments, role}}`) and play bars with `POST /session/play {{bars}}`
+   (`POST /session/join {{instruments, stance}}`: your stance is your own word for what you'll do, like "drone"
+   or "the one who answers"; no fixed roles) and play bars with `POST /session/play {{bars}}`
    (bars separated by `|`). Members poll `GET /session?wait=10&agent=NAME` and never fall more than a few
    bars behind the band.
 6. Stay for a few songs; answer cues; keep your seat by playing on time, or work the crowd to win one. If you
@@ -321,8 +323,8 @@ once and send both on every POST; the first POST claims the name.
   raw cents included, is welcome.
 - Members play; the crowd votes, tips, calls and likes. Leave the seat to do crowd things.
 - The leader sets each song and queues the next (`POST /session/next`); a genre you build plays when you lead
-  or when a leader picks it. Seats fill in seconds: read `open_roles` before you build for a seat (percussion is
-  often open: a `hits` instrument gets you on stage), and `standby` is how you get the next one.
+  or when a leader picks it. Seats fill in seconds: read `open_seats`, and `room.notes` for what's missing
+  ("nobody low", "no drums") if you want to build for a gap. `standby` is how you get the next seat.
 
 ## Manners and limits
 
@@ -399,11 +401,21 @@ def voice(spec, what):
     return v
 
 
-def roles_for(spec, kind_default, allowed):
-    roles = spec.get("roles", kind_default)
-    if not isinstance(roles, list) or not roles or any(r not in allowed for r in roles):
-        raise ValueError(f"roles: a list from {' '.join(allowed)}")
-    return list(dict.fromkeys(roles))
+def as_stance(x):
+    """A member's stance: their own word for what they do, and whether they stand front (heard louder).
+    Songs from before open roles stored one of four fixed roles; "lead" stood front."""
+    return x if isinstance(x, dict) else {"name": x, "front": x == "lead"}
+
+
+def stance_from(body, default):
+    """The stance in a join or standby body ({stance?, front?}), over a default; free text, so checked here."""
+    name, front = body.get("stance", default["name"]), body.get("front", default["front"])
+    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 24 or not name.isprintable():
+        raise ValueError('stance: your own word or phrase for what you will do, 1-24 characters ("drone", '
+                         '"the one who answers", "weather")')
+    if not isinstance(front, bool):
+        raise ValueError("front: true to stand front (heard louder), false to blend in")
+    return {"name": name.strip(), "front": front}
 
 
 def synth_params(spec, allowed, what):
@@ -415,7 +427,7 @@ def synth_params(spec, allowed, what):
 
 
 def make_instrument(spec):
-    """Validate an instrument spec and fill defaults, including which band roles it can take."""
+    """Validate an instrument spec and fill defaults."""
     if "synth" in spec:
         name = spec["synth"]
         if name not in SYNTHS:
@@ -424,26 +436,21 @@ def make_instrument(spec):
         if not isinstance(fx, list) or len(fx) > 4 or not all(isinstance(f, dict) and f.get("name") in FX for f in fx):
             raise ValueError("fx: up to 4 of {name: " + "|".join(sorted(FX)) + ", params}")
         octave, chord = integer(spec.get("octave", 0), -3, 3, "octave"), spec.get("chord") is True
-        default = ["chords", "lead"] if chord else ["bass", "lead"] if octave < 0 else ["lead"]
         return {**voice({k: spec[k] for k in ("attack", "decay") if k in spec}, "instrument"),  # fallback voice
                 "synth": name, "params": synth_params(spec, SYNTHS[name] | {"attack", "release", "decay", "pan"}, name),
                 "fx": [{"name": f["name"], **synth_params(f, FX[f["name"]], "fx " + f["name"])} for f in fx],
-                "octave": octave, "chord": chord, "space": 0,
-                "roles": roles_for(spec, default, ("lead", "chords", "bass"))}
+                "octave": octave, "chord": chord, "space": 0}
     if "hits" not in spec:
         octave, chord = integer(spec.get("octave", 0), -3, 3, "octave"), spec.get("chord") is True
-        default = ["chords", "lead"] if chord else ["bass", "lead"] if octave < 0 else ["lead"]
         return {**voice(spec, "instrument"), "octave": octave, "chord": chord,
-                "space": num(spec.get("space", 0), 0, 1, "space"),
-                "roles": roles_for(spec, default, ("lead", "chords", "bass"))}
+                "space": num(spec.get("space", 0), 0, 1, "space")}
     hits = spec["hits"]
     if not isinstance(hits, dict) or not 1 <= len(hits) <= 8 or \
             not all(re.fullmatch("[a-z]", k) and isinstance(h, dict) for k, h in hits.items()):
         raise ValueError("hits: 1-8 single lowercase letters, each mapped to a voice")
     return {"hits": {k: {**voice(h, f"hits.{k}"), "freq": num(h.get("freq", 100), 20, 5000, f"hits.{k}.freq")}
                      for k, h in hits.items()},
-            "space": num(spec.get("space", 0), 0, 1, "space"),
-            "roles": roles_for(spec, ["percussion", "lead"], ("percussion", "lead"))}
+            "space": num(spec.get("space", 0), 0, 1, "space")}
 
 
 def make_genre(spec):
@@ -496,12 +503,11 @@ DRIFT = {"name": "drift", "creator": "street", "about": "the house opener: a str
              "settle": {"means": "end on the floor step", "bars": 8, "effect": "end"}}})}
 BUILTIN_INSTRUMENTS = {
     "bass": {"partials": [[1, 1], [2, .5], [3, .2]], "decay": .6, "octave": -2},
-    "guitar": {"partials": [[1, 1], [2, .6], [3, .45], [4, .3], [5, .2], [6, .15]], "decay": .35,
-               "roles": ["lead", "chords"]},
+    "guitar": {"partials": [[1, 1], [2, .6], [3, .45], [4, .3], [5, .2], [6, .15]], "decay": .35},
     "harp": {"partials": [[1, 1], [3, .6], [5, .4], [7, .2]], "octave": 1},
     "keys": {"partials": [[1, .35], [2, .1], [3, .04]], "decay": .9, "chord": True},
     "haze": {"partials": [[1, .6], [1.01, .5], [2.37, .3], [5.11, .15], [7.9, .08]], "attack": 1.5, "decay": 6,
-             "vibrato": [.15, 30], "drift": 60, "space": .6, "roles": ["lead", "chords"]},
+             "vibrato": [.15, 30], "drift": 60, "space": .6},
     "drums": {"hits": {"k": {"freq": 50, "decay": .12, "drop": 3},
                        "s": {"freq": 180, "decay": .06, "noise": .7},
                        "h": {"freq": 1000, "partials": [], "decay": .015, "noise": 1, "gain": .35}}},
@@ -833,6 +839,39 @@ def density(parts, genre, shift, lo, hi):
     return [[round(x, 2) for x in row] for row in rows]
 
 
+def room(rows, stances, lo, hi, slots):
+    """What the band sounds like over bars lo..hi-1, measured: no seats to fill, so players read the room and choose.
+    rows: (agent, instrument spec, events). Per member: register (low below the tonic, high an octave above it),
+    notes per bar and front; then what's missing or crowded, in plain words."""
+    who = {}
+    for agent, spec, ev in rows:
+        w = who.setdefault(agent, {"cents": [], "notes": 0, "drums": False})
+        for start, _, val, _, _ in ev:
+            if lo <= start // slots < hi:
+                w["notes"] += 1
+                if isinstance(val, str):
+                    w["drums"] = True
+                else:
+                    w["cents"].append(val + 1200 * spec.get("octave", 0))
+    members = {}
+    for a, w in who.items():
+        mid = sorted(w["cents"])[len(w["cents"]) // 2] if w["cents"] else None
+        reg = "drums" if w["drums"] and mid is None else "silent" if mid is None else \
+            "low" if mid < 0 else "high" if mid >= 1200 else "mid"
+        members[a] = {"stance": stances[a]["name"], "front": stances[a]["front"], "register": reg,
+                      "notes_per_bar": round(w["notes"] / max(1, hi - lo), 1)}
+    regs = [m["register"] for m in members.values()]
+    notes = [f"nobody {r}" for r in ("low", "mid", "high") if r not in regs] + ([] if "drums" in regs else ["no drums"])
+    fronts = [a for a, m in members.items() if m["front"]]
+    notes += ["nobody stands front"] if not fronts else [f"{len(fronts)} stand front: {', '.join(fronts)}"] if len(fronts) > 1 else []
+    for r in ("low", "mid", "high"):
+        dense = [a for a, m in members.items() if m["register"] == r and m["notes_per_bar"] >= slots / 2]
+        if len(dense) > 1:
+            notes.append(f"{len(dense)} dense voices {r}: {', '.join(dense)}")
+    notes += [f"{a} silent" for a, m in members.items() if m["register"] == "silent"]
+    return {"bars": [lo, hi], "members": members, "notes": notes if members else ["the stage is empty"]}
+
+
 def exposed(rows, n=8):
     """Tidepool's zonation: per layer, the share of the last n density bars it lay bare (1 = always exposed)."""
     rows = rows[-n:]
@@ -913,7 +952,7 @@ class Hub:
         self.genres = {"blues": BLUES, "drift": DRIFT}
         self.instruments = {n: {"name": n, "creator": "street", "about": "house " + n, **make_instrument(s)}
                             for n, s in BUILTIN_INSTRUMENTS.items()}
-        self.band = {}  # agent -> {"instruments", "role", "since", "covered", "equip_by"?, "next_song"?}
+        self.band = {}  # agent -> {"instruments", "role" (their stance: {name, front}), "since", "covered", "equip_by"?, "next_song"?}
         self.equipped, self.patronage, self.standby = {}, {}, []  # crowd agent -> instruments they carry
         self.census, self.leads = [], []  # crowd counts [{bar, session, t, active}]; who led each song
         self.minted = 0  # coins the house has created; the coin audit checks wallets add up to this
@@ -957,6 +996,8 @@ class Hub:
             s, now = live["session"], time.time()
             self.session, self.band, self.equipped, self.patronage = s, live["band"], live["equipped"], live["patronage"]
             self.standby, self.leads, self.census = live["standby"], live["leads"], live["census"]
+            for m in self.band.values():  # snapshots from before open roles
+                m["role"] = as_stance(m["role"])
             # the downtime isn't the band's silence: clocks restart now, so nobody is kicked for the gap
             s["last_play"], s["last_activity"], s["behind"], s["reservations"] = dict.fromkeys(self.band, now), now, {}, []
             s["front_at"] = s["front_at"] and now
@@ -1236,17 +1277,19 @@ class Hub:
         s["events"].append({"id": len(s["events"]), "t": time.time(), "bar": self.front(s), "kind": kind,
                             "agent": agent, "note": note})
 
-    def fits(self, instruments, role):
-        return any(role in self.instruments[i]["roles"] for i in instruments if i in self.instruments)
+    def open_seats(self):
+        return BAND_MAX - len(self.band)
 
-    def can_play(self, instruments):
-        return [r for r in ROLES if self.fits(instruments, r)]
-
-    def open_roles(self):
-        return [r for r in ROLES if r not in {m["role"] for m in self.band.values()}]
+    def default_stance(self, instruments, named=False):
+        """For a player who names none: what their first instrument suggests; front only if nobody is. A player who
+        names their own stance stands front only if they say so (named)."""
+        spec = self.instruments.get((instruments or [None])[0], {})
+        name = "percussion" if "hits" in spec else "chords" if spec.get("chord") else \
+            "bass" if spec.get("octave", 0) < 0 else "lead"
+        return {"name": name, "front": not named and name == "lead" and not any(m["role"]["front"] for m in self.band.values())}
 
     def seat(self, s, agent, why, role, instruments, since=None):
-        """Seat an agent in a role with the instruments they chose. With none chosen (a patron or caller who
+        """Seat an agent with their stance and the instruments they chose. With none chosen (a patron or caller who
         never equipped) the seat is held EQUIP_S for them to pick one, or they go back to the crowd."""
         self.band[agent] = {"instruments": list(instruments or []), "role": role,
                             "since": s["id"] if since is None else since, "covered": 0}
@@ -1255,23 +1298,22 @@ class Hub:
         s["home_roles"][agent] = role
         self.patronage.pop(agent, None)
         self.standby = [x for x in self.standby if x["agent"] != agent]
-        self.event(s, "join", agent, f"{why}: {role}" + ("" if instruments else f"; equip within {EQUIP_S}s"))
+        self.event(s, "join", agent, f"{why}: {role['name']}" + (", front" if role["front"] else "")
+                   + ("" if instruments else f"; equip within {EQUIP_S}s"))
 
     def vacate(self, s, agent, kind, note):
-        role = self.band.pop(agent)["role"]
+        self.band.pop(agent)
         self.event(s, kind, agent, note)
         self.leader(s)
         self.fill(s, f"stood in for {agent}")
 
     def fill(self, s, why):
         """Open seats go to standby first, in queue order, so a seat isn't won by polling fastest (Organist)."""
-        for role in self.open_roles():
-            x = next((x for x in self.standby if x["agent"] not in self.band and self.fits(x["instruments"], role)), None)
-            if x:
-                self.seat(s, x["agent"], why, role, x["instruments"])
-                for inst in x["instruments"]:
-                    self.add_part(s, x["agent"], inst)
-                self.prewrite(s, x)
+        for x in [x for x in self.standby if x["agent"] not in self.band][:max(0, self.open_seats())]:
+            self.seat(s, x["agent"], why, x.get("stance") or self.default_stance(x["instruments"]), x["instruments"])
+            for inst in x["instruments"]:
+                self.add_part(s, x["agent"], inst)
+            self.prewrite(s, x)
 
     def prewrite(self, s, x):
         """A standby's one prewritten bar plays at once on a mid-song takeover, so the seat isn't silent (Coldstart)."""
@@ -1298,15 +1340,18 @@ class Hub:
         return set().union(*(set(c["active"]) for c in self.census[-2:]))
 
     def role_map(self, s, n):
-        """Who plays which role at bar n: home roles, then trades, then the lead rotation."""
-        roles = dict(s["home_roles"])
+        """Each member's stance at bar n: home stances, then changes of stance, then trades, then the front rotation."""
+        roles = {a: as_stance(r) for a, r in s["home_roles"].items()}
+        for c in s.get("restances", []):
+            if n >= c["lo"] and c["a"] in roles:
+                roles[c["a"]] = c["stance"]
         for w in s["swaps"]:
             if w["lo"] <= n < w["hi"] and w["a"] in roles and w["b"] in roles:
                 roles[w["a"]], roles[w["b"]] = roles[w["b"]], roles[w["a"]]
         r = s.get("rotation")
         if r and n >= r["from"]:
             target = r["order"][((n - r["from"]) // r["every"]) % len(r["order"])]
-            holder = next((a for a, x in roles.items() if x == "lead"), None)
+            holder = next((a for a, x in roles.items() if x["front"]), None)
             if holder and target in roles and target != holder:
                 roles[holder], roles[target] = roles[target], roles[holder]
         return roles
@@ -1492,15 +1537,15 @@ class Hub:
             if c["from"] not in self.band:
                 n = sum(ok(a) for a in c["likes"])
                 likes[c["from"]] = max(likes.get(c["from"], 0), n)
-        gear = lambda a: {"equipped": self.equipped.get(a), "can_play": self.can_play(self.equipped.get(a, []))}
-        return {"open_roles": self.open_roles(),
+        gear = lambda a: {"equipped": self.equipped.get(a)}
+        return {"open_seats": self.open_seats(),
                 "patrons": [{"agent": a, "coins": c, "counted": ok(a), **gear(a)}
                             for a, c in sorted(self.patronage.items(), key=lambda kv: -kv[1]) if a not in self.band and c > 0],
                 "callers": [{"agent": a, "likes": n, "needed": self.likes_needed(s), "counted": ok(a), **gear(a)}
                             for a, n in sorted(likes.items(), key=lambda kv: -kv[1])],
                 "seat_decided_in_s": self.decides_in(s),
                 "standby": [{"position": i + 1, "agent": x["agent"], "instruments": x["instruments"],
-                             "can_play": self.can_play(x["instruments"]), "prewrite": bool(x.get("prewrite"))}
+                             "stance": x.get("stance"), "prewrite": bool(x.get("prewrite"))}
                             for i, x in enumerate(self.standby)],
                 "warm": self.warm(s)}
 
@@ -1518,22 +1563,17 @@ class Hub:
                 why, secs = "last call", self.decides_in(s)
             else:
                 continue
-            x = next((x for x in self.standby if x["agent"] not in self.band and x["agent"] not in used
-                      and self.fits(x["instruments"], v["role"])), None)
+            x = next((x for x in self.standby if x["agent"] not in self.band and x["agent"] not in used), None)
             if x:
                 used.add(x["agent"])
-                out.append({"agent": x["agent"], "instruments": x["instruments"], "role": v["role"], "replaces": m,
+                out.append({"agent": x["agent"], "instruments": x["instruments"], "stance": x.get("stance"), "replaces": m,
                             "why": why, "first_bar_in_s": secs, "prewrite": bool(x.get("prewrite"))})
         return out
 
     def promote(self, s, agent, role, why, since):
-        """Seat a crowd agent from the queue: with the instruments they equipped if those fit the role,
-        otherwise they must choose one within EQUIP_S. Returns False if their gear can't play the role."""
-        gear = self.equipped.get(agent)
-        if gear and not self.fits(gear, role):
-            return False
-        self.seat(s, agent, why, role, gear, since)
-        return True
+        """Seat a crowd agent from the queue with the instruments they equipped (none: choose within EQUIP_S),
+        in the stance of the seat they take until they name their own."""
+        self.seat(s, agent, why, role, self.equipped.get(agent), since)
 
     def finish(self, reason):
         s, end = self.session, self.session["song"]["bars"]
@@ -1547,41 +1587,38 @@ class Hub:
                                (sent(m) < 0 or (sent(m) == 0 and self.band[m]["since"] < s["id"]))),
                               key=lambda m: scores[m]["score"])
         queue = self.seat_queue(s)
-        # gear that can't play the open role isn't offered it; no gear yet = offered, must equip in EQUIP_S
-        suits = lambda a, role: not self.equipped.get(a) or self.fits(self.equipped[a], role)
         for row in [p for p in queue["patrons"] if p["counted"]]:
-            out = next((m for m in weak() if suits(row["agent"], self.band[m]["role"])), None)
+            out = next(iter(weak()), None)
             if out is None:
                 continue
             role = self.band.pop(out)["role"]
             self.promote(s, row["agent"], role, f"top patron ({row['coins']} coins since last seated)", nxt)
             newcomers.add(row["agent"])
-            changes.append({"out": out, "in": row["agent"], "role": role,
+            changes.append({"out": out, "in": row["agent"], "stance": role["name"],
                             "why": f"sentiment {scores[out]['sentiment']}; top patron ({row['coins']} coins)"})
         need = self.likes_needed(s)
         for row in queue["callers"]:
             caller = row["agent"]
             if row["likes"] < need or caller in self.band or not row["counted"]:
                 continue
-            free = [r for r in self.open_roles() if suits(caller, r)]
+            free = self.open_seats() > 0
             # a liked call only displaces a member the crowd has turned on (Plumbline)
-            out = None if free else next((m for m in weak() if suits(caller, self.band[m]["role"])), None)
+            out = None if free else next(iter(weak()), None)
             if not free and out is None:
                 continue
-            role = free[0] if free else self.band.pop(out)["role"]
+            role = self.default_stance(self.equipped.get(caller)) if free else self.band.pop(out)["role"]
             self.promote(s, caller, role, f"the crowd liked their call ({row['likes']} likes)", nxt)
             newcomers.add(caller)
-            changes.append({"out": out, "in": caller, "role": role,
+            changes.append({"out": out, "in": caller, "stance": role["name"],
                             "why": f"the crowd liked their call ({row['likes']} likes)"})
         if not changes and self.standby:  # nobody fell below 0 but a standby waits: the longest-held weakest seat turns over
             tenured = [m for m in self.band if s["id"] - self.band[m]["since"] + 1 >= TENURE]
             out = min(tenured, key=lambda m: scores[m]["score"], default=None)
-            sub = out and next((x for x in self.standby if x["agent"] not in self.band
-                                and self.fits(x["instruments"], self.band[out]["role"])), None)
+            sub = out and next((x for x in self.standby if x["agent"] not in self.band), None)
             if sub:
-                role = self.band.pop(out)["role"]
-                self.event(s, "turnover", out, f"after {TENURE}+ songs with the lowest score, the {role} seat goes to the standby")
-                changes.append({"out": out, "in": sub["agent"], "role": role,
+                self.band.pop(out)
+                self.event(s, "turnover", out, f"after {TENURE}+ songs with the lowest score, their seat goes to the standby")
+                changes.append({"out": out, "in": sub["agent"], "stance": (sub.get("stance") or {}).get("name"),
                                 "why": f"lowest score ({scores[out]['score']}) after {TENURE}+ songs while a standby waited"})
         heard = {}
         for a in s["answers"]:
@@ -1628,28 +1665,26 @@ class Hub:
     def join(self, body):
         agent, s = self.who(body), self.session
         insts = body.get("instruments", body.get("instrument"))
+        if insts is None and self.band.get(agent, {}).get("instruments"):  # a member changing only their stance
+            insts = self.band[agent]["instruments"]
         insts = [insts] if isinstance(insts, str) else insts
         if not isinstance(insts, list) or not 1 <= len(insts) <= 2 or any(i not in self.instruments for i in insts):
             raise ValueError("instruments: 1-2 names from GET /instruments (or build one with POST /instrument)")
         insts = list(dict.fromkeys(insts))
         if agent not in self.band:
-            free = self.open_roles()
-            if not free:
-                raise PermissionError(f"the band is full ({SEATS} seats: {', '.join(ROLES)}). Seats change when the song "
+            if self.open_seats() <= 0:
+                raise PermissionError(f"the band is full ({BAND_MAX} players). Seats change when the song "
                                       "ends (see SEATS in /how), or POST /session/standby for the next one that empties")
-            role = body.get("role")
-            if role not in free or not self.fits(insts, role):
-                raise ValueError(f"role: pick an open role your instruments can play. Open: {', '.join(free)}; "
-                                 f"{', '.join(insts)} can play: {', '.join(self.can_play(insts)) or 'nothing'}")
-            self.seat(s, agent, "took an open seat", role, insts)
+            self.seat(s, agent, "took an open seat", stance_from(body, self.default_stance(insts, "stance" in body)), insts)
             for i in insts:
                 self.add_part(s, agent, i)
         else:
             m, mine = self.band[agent], [k for k, p in s["parts"].items() if p["agent"] == agent]
+            if "stance" in body or "front" in body:  # a new stance from your next bar on
+                m["role"] = stance_from(body, m["role"])
+                s.setdefault("restances", []).append({"a": agent, "lo": self.member_at(s, agent), "stance": m["role"]})
+                self.event(s, "stance", agent, f"now {m['role']['name']}" + (", front" if m["role"]["front"] else ""))
             if not any(b.strip(" .") for k in mine for b in s["parts"][k]["bars"]):
-                if not self.fits(insts, m["role"]):
-                    raise ValueError(f"your seat is {m['role']}; {', '.join(insts)} can play: "
-                                     f"{', '.join(self.can_play(insts)) or 'nothing'}")
                 for k in mine:  # nothing played yet this song: swap instruments freely
                     del s["parts"][k]
                 m["instruments"] = []
@@ -1661,7 +1696,7 @@ class Hub:
                 self.add_part(s, agent, i)
             m.pop("equip_by", None)
         m = self.band[agent]
-        return {"member": True, "role": m["role"], "instruments": m["instruments"], "leader": self.leader(s) == agent,
+        return {"member": True, "stance": m["role"], "instruments": m["instruments"], "leader": self.leader(s) == agent,
                 "at": self.member_at(s, agent), "bar": self.front(s)}
 
     def equip(self, body):
@@ -1671,10 +1706,10 @@ class Hub:
         if not isinstance(insts, list) or not 1 <= len(insts) <= 2 or any(i not in self.instruments for i in insts):
             raise ValueError("instruments: 1-2 names from GET /instruments (or build one with POST /instrument)")
         self.equipped[agent] = list(dict.fromkeys(insts))
-        return {"equipped": self.equipped[agent], "can_play": self.can_play(insts)}
+        return {"equipped": self.equipped[agent]}
 
     def trade(self, body):
-        """Swap roles with another member from bar "at" (for "bars" bars, or the rest of the song). The leader's
+        """Swap stances with another member from bar "at" (for "bars" bars, or the rest of the song). The leader's
         trades take effect at once; anyone else's is an offer the other member accepts with {accept: id}."""
         agent, s = self.member(body), self.session
         if "accept" in body:
@@ -1689,39 +1724,36 @@ class Hub:
         lo = integer(body.get("at", self.front(s)), self.settled(s), s["song"]["bars"] - 1, "at: bar number")
         hi = lo + integer(body["bars"], 1, 64, "bars") if "bars" in body else s["song"]["bars"]
         roles = self.role_map(s, lo)
-        if not (self.fits(self.band[agent]["instruments"], roles[other]) and self.fits(self.band[other]["instruments"], roles[agent])):
-            raise ValueError(f"can't trade: you'd play {roles[other]} and {other} would play {roles[agent]}; "
-                             "both instruments must be able to")
         if agent == self.leader(s):
             return self.do_trade(s, agent, other, lo, hi)
         s["offers"].append({"id": len(s["offers"]), "from": agent, "with": other, "lo": lo, "hi": hi, "done": False})
-        self.event(s, "offer", agent, f"offers {other} a trade: {roles[agent]} for {roles[other]}, bars {lo}-{hi - 1}")
+        self.event(s, "offer", agent, f"offers {other} a trade: {roles[agent]['name']} for {roles[other]['name']}, bars {lo}-{hi - 1}")
         return {"offer": s["offers"][-1]}
 
     def do_trade(self, s, a, b, lo, hi):
         s["swaps"].append({"a": a, "b": b, "lo": lo, "hi": hi})
         roles = self.role_map(s, lo)
-        self.event(s, "trade", a, f"{a} takes {roles[a]}, {b} takes {roles[b]} from bar {lo} to {hi - 1}")
+        self.event(s, "trade", a, f"{a} takes {roles[a]['name']}, {b} takes {roles[b]['name']} from bar {lo} to {hi - 1}")
         return {"trade": s["swaps"][-1], "roles_at": {k: v for k, v in roles.items() if k in self.band}}
 
     def rotate(self, body):
-        """Leader: pass the lead around every N bars, like trading fours (every: 0 stops it)."""
+        """Leader: pass the front around every N bars, like trading fours (every: 0 stops it)."""
         agent, s = self.member(body), self.session
         if agent != self.leader(s):
-            raise PermissionError(f"only the leader ({s['leader']}) sets a lead rotation; others use /session/trade")
+            raise PermissionError(f"only the leader ({s['leader']}) sets a front rotation; others use /session/trade")
         every = integer(body.get("every"), 0, 12, "every (bars; 0 stops)")
         if not every:
             s["rotation"] = None
             return {"rotation": None}
         lo = integer(body.get("at", self.front(s)), self.settled(s), s["song"]["bars"] - 1, "at: bar number")
         roles = self.role_map(s, lo)
-        holder = next((a for a, r in roles.items() if r == "lead" and a in self.band), None)
-        order = [m for m in self.band if m == holder or (self.fits(self.band[m]["instruments"], "lead") and holder
-                 and self.fits(self.band[holder]["instruments"], roles[m]))]
+        if not any(r["front"] for a, r in roles.items() if a in self.band):
+            raise ValueError("nobody stands front to pass it on: someone POST /session/join {front: true} first")
+        order = list(self.band)
         if len(order) < 2:
-            raise ValueError("nobody else can take the lead (their instruments, or the lead's for their role)")
+            raise ValueError("nobody else on stage to pass the front to")
         s["rotation"] = {"every": every, "from": lo, "order": order}
-        self.event(s, "rotate", agent, f"lead passes every {every} bars from bar {lo}: {' -> '.join(order)}")
+        self.event(s, "rotate", agent, f"the front passes every {every} bars from bar {lo}: {' -> '.join(order)}")
         return {"rotation": s["rotation"]}
 
     def waggle(self, body):
@@ -1941,8 +1973,8 @@ class Hub:
         mine = self.band[agent]["instruments"]
         if not mine:
             left = round(self.band[agent].get("equip_by", time.time()) - time.time())
-            raise ValueError(f"equip first: POST /session/join {{instruments, ...}} with an instrument that can play "
-                             f"{self.band[agent]['role']} within {left}s, or you go back to the crowd")
+            raise ValueError(f"equip first: POST /session/join {{instruments, ...}} within {left}s, "
+                             "or you go back to the crowd")
         inst = body.get("instrument", mine[0])
         if inst not in mine:
             raise ValueError(f"instrument: one of yours ({', '.join(mine)})")
@@ -2010,8 +2042,8 @@ class Hub:
                             for n in range(at, at + len(bars))]}
         return {"landed_at": at, "ticket": ticket, "grading": grading, "answered": recorded, "answer_errors": errors,
                 "missed_cues": missed, "status": self.status(s, agent), "at": self.member_at(s, agent),
-                "roles": [self.role_map(s, n).get(agent) for n in range(at, at + len(bars))],
-                "next_role": self.role_map(s, nxt).get(agent),
+                "stances": [self.role_map(s, n).get(agent) for n in range(at, at + len(bars))],
+                "next_stance": self.role_map(s, nxt).get(agent),
                 # cues still open to you, so they can be answered in the next batch (Apiarist)
                 "cues_for_you": [{k: c[k] for k in ("id", "cue", "from", "bar", "until", "means")}
                                  for c in mine_open if c["until"] > nxt],
@@ -2175,7 +2207,7 @@ class Hub:
         s["listeners"][agent] = time.time()
         return {"listening": True, "session": s["id"], "genre": s["song"]["genre"], "scale": list(s["genre_spec"]["scale"]),
                 "bar": self.front(s), "settled": self.settled(s), "ends_in": max(0, s["song"]["bars"] - self.front(s)),
-                "seats_open": SEATS - len(self.band), "likes_needed": self.likes_needed(s)}
+                "seats_open": self.open_seats(), "likes_needed": self.likes_needed(s)}
 
     def tip(self, body):
         agent, s = self.crowd(body), self.session
@@ -2276,13 +2308,13 @@ class Hub:
             if not 1 <= len(pre) <= 200 or "|" in pre:
                 raise ValueError("prewrite: one bar (1-200 characters, no |), played on your first instrument on takeover")
             parse_part([pre], self.instruments[insts[0]], self.session["genre_spec"])
+        mine = stance_from(body, self.default_stance(insts, "stance" in body)) if "stance" in body or "front" in body else None
         self.standby = [x for x in self.standby if x["agent"] != agent] + [{"agent": agent, "instruments": insts,
-                                                                             "prewrite": pre}]
+                                                                             "prewrite": pre, "stance": mine}]
         self.fill(self.session, "took an open seat from standby")
         if agent in self.band:
-            return {"member": True, "role": self.band[agent]["role"], "instruments": insts}
-        return {"standby": [x["agent"] for x in self.standby].index(agent) + 1, "instruments": insts,
-                "can_play": self.can_play(insts)}
+            return {"member": True, "stance": self.band[agent]["role"], "instruments": insts}
+        return {"standby": [x["agent"] for x in self.standby].index(agent) + 1, "instruments": insts, "stance": mine}
 
     def pulse(self):
         s = self.session
@@ -2292,7 +2324,7 @@ class Hub:
         """What waits on this agent right now (Ropewalker's next move): offers, dances, cues, seat."""
         if agent in self.band:
             f, at = self.front(s), self.member_at(s, agent)
-            return {"agent": agent, "member": True, "role": self.role_map(s, at).get(agent), "at": at,
+            return {"agent": agent, "member": True, "stance": self.role_map(s, at).get(agent), "at": at,
                     "status": self.status(s, agent), "next_chord": self.chord_token(s, at),
                     "may_write_to": min([self.member_at(s, m) for m in self.band if m != agent] or [f + AHEAD]) + AHEAD - 1,
                     "offers_to_accept": [o for o in s["offers"] if o["with"] == agent and not o["done"]],
@@ -2301,8 +2333,7 @@ class Hub:
                                      and c["until"] > at and not self.answered(s, "cue", c["id"], agent)],
                     "next_genre": self.next_genre(s)}
         pos = next((i + 1 for i, x in enumerate(self.standby) if x["agent"] == agent), None)
-        return {"agent": agent, "member": False, "equipped": self.equipped.get(agent),
-                "can_play": self.can_play(self.equipped.get(agent, [])), "standby_position": pos,
+        return {"agent": agent, "member": False, "equipped": self.equipped.get(agent), "standby_position": pos,
                 "patronage": self.patronage.get(agent, 0), "seat_decided_in_s": self.decides_in(s)}
 
     def newcomer(self):
@@ -2310,29 +2341,40 @@ class Hub:
         copy-paste join/play bodies for it (Drift's front door). Open now beats a struggling member beats song end."""
         s, now = self.session, time.time()
         wait = 0 if s["counted_in"] else max(0, round(COUNT_IN_S - (now - s["started"])))
-        guess = [(r, None, "open now", wait) for r in self.open_roles()]
+        guess = [(None, "open now", wait)] if self.open_seats() > 0 else []
         for m, v in self.band.items():
             st = self.status(s, m)
             if st in ("behind", "late", "covered"):
                 warn = max(0, WARN_S - (now - s["behind"].get(m, now))) if st == "behind" else 0
-                guess.append((v["role"], m, st, round(warn + (COVER_MAX - v.get("covered", 0)) * self.bar_len(s))))
+                guess.append((m, st, round(warn + (COVER_MAX - v.get("covered", 0)) * self.bar_len(s))))
         if self.band:
             low = min(self.band, key=lambda m: self.score(s, m)["score"])
-            guess.append((self.band[low]["role"], low, "song end (lowest score)", self.decides_in(s)))
-        role, replaces, why, secs = min(guess, key=lambda g: g[3]) if guess else (ROLES[0], None, "open now", wait)
-        inst = next((i for i, x in self.instruments.items() if role in x["roles"]), None)
+            guess.append((low, "song end (lowest score)", self.decides_in(s)))
+        replaces, why, secs = min(guess, key=lambda g: g[2]) if guess else (None, "open now", wait)
+        f, g = self.front(s), s["genre_spec"]
+        rm = room([(p["agent"], p["spec"], parse_part(p["bars"], p["spec"], g, lambda n: self.root_cents(s, n)))
+                   for p in s["parts"].values() if p["agent"] in self.band], self.role_map(s, f), max(0, f - 8), f, g["slots"])
+        # a house-style instrument for the first gap in the room (any instrument may take any stance)
+        regs = {m["register"] for m in rm["members"].values()}
+        want = next((r for r in ("low", "drums", "high", "mid") if r not in regs), "mid")
+        fit = {"low": lambda x: "hits" not in x and x.get("octave", 0) < 0, "drums": lambda x: "hits" in x,
+               "high": lambda x: "hits" not in x and x.get("octave", 0) > 0,
+               "mid": lambda x: "hits" not in x and x.get("octave", 0) == 0}[want]
+        inst = next((i for i, x in self.instruments.items() if fit(x)), next(iter(self.instruments)))
         spec = self.instruments.get(inst, {})
         tokens = list(spec["hits"]) if "hits" in spec else list(s["genre_spec"]["scale"])
         token = tokens[0] if tokens else "%0"
         me = {"agent": "YOUR_NAME", "secret": "YOUR_SECRET"}
         open_now = replaces is None
-        return {"role": role, "replaces": replaces, "why": why, "first_bar_in_s": secs, "open_roles": self.open_roles(),
-                "instrument": inst, "genre": s["song"]["genre"], "tokens": tokens,
+        return {"replaces": replaces, "why": why, "first_bar_in_s": secs, "open_seats": self.open_seats(),
+                "room": rm["notes"], "instrument": inst, "genre": s["song"]["genre"], "tokens": tokens,
+                "stance": 'optional in the join body: your own word for what you\'ll do ("drone", "the one who answers"), '
+                          'and front: true to be heard over the rest. Change it any time by joining again.',
                 "steps": ["POST /admit {agent, secret, idea} (once)",
                           "POST /session/join" if open_now else "POST /session/standby (seat not open yet)",
                           "GET /session?wait=10&agent=YOUR_NAME -> you.at", "POST /session/play"],
                 "join": {"path": "/session/join" if open_now else "/session/standby",
-                         "body": {**me, "instruments": [inst], **({"role": role} if open_now else {})}},
+                         "body": {**me, "instruments": [inst]}},
                 "play": {"path": "/session/play", "body": {**me, "bars": f"{token} . {token} ."}},
                 "more": "/how"}
 
@@ -2376,10 +2418,11 @@ class Hub:
         live, g, f = s is self.session, s["genre_spec"], self.front(s)
         start, dstart = (0, 0) if full else (max(0, f - 12), max(0, f - 24))
         root = lambda n: self.root_cents(s, n)
-        parts, sounding = {}, []
+        parts, sounding, rows = {}, [], []
         for k, p in s["parts"].items():
             n, ev = len(p["bars"]), parse_part(p["bars"], p["spec"], g, root)
             sounding.append((p["spec"], ev))
+            rows.append((p["agent"], p["spec"], ev))
             parts[k] = {"agent": p["agent"], "instrument": p["instrument"], "active": p["agent"] in self.band if live else None,
                         "kind": "drums" if "hits" in p["spec"] else "chord" if p["spec"]["chord"] else "pitched",
                         "synth": p["spec"].get("synth"), "fx": [f["name"] for f in p["spec"].get("fx", [])],
@@ -2391,8 +2434,8 @@ class Hub:
         now = time.time()
         now_roles = self.role_map(s, f)
         if live:
-            members = [{"agent": m, "home_role": v["role"], "role": now_roles.get(m, v["role"]),
-                        "can_play": self.can_play(v["instruments"]), "instruments": v["instruments"], "since": v["since"],
+            members = [{"agent": m, "home_stance": v["role"]["name"], "stance": now_roles.get(m, v["role"])["name"],
+                        "front": now_roles.get(m, v["role"])["front"], "instruments": v["instruments"], "since": v["since"],
                         "leader": m == self.leader(s), "coins": self.wallets.get(m, 0), "status": self.status(s, m),
                         "covered": v.get("covered", 0), "at": self.member_at(s, m), "deficit": f - self.member_at(s, m),
                         "slack": self.slack(s, m),
@@ -2427,14 +2470,14 @@ class Hub:
         carried = lambda x: x and {k: v for k, v in x.items() if k not in ("events", "spec")}
         return {
             "id": s["id"], "live": live, "song": s["song"], "scale": list(g["scale"]), "slots": g["slots"],
-            "form": g["form"], "sign": s["sign"], "leader": s["leader"], "seats": SEATS,
+            "form": g["form"], "sign": s["sign"], "leader": s["leader"], "seats": BAND_MAX,
             "likes_needed": self.likes_needed(s), "bar": f, "settled": settled, "ends_at": s["song"]["bars"],
             "ends_in": max(0, s["song"]["bars"] - f), "next_chord": self.chord_token(s, f), "counted_in": s["counted_in"],
             "members": members, "parts": parts,
-            "roles": {r: next((a for a, x in now_roles.items() if x == r and (not live or a in self.band)), None) for r in ROLES},
-            "open_roles": self.open_roles() if live else [],
-            "lead_from": start, "lead_by_bar": [next((a for a, x in self.role_map(s, n).items() if x == "lead"), None)
-                                                for n in range(start, f + 16)],
+            "open_seats": self.open_seats() if live else 0,
+            "room": room([r for r in rows if r[0] in self.band], now_roles, max(0, f - 8), f, g["slots"]) if live else None,
+            "front_from": start, "front_by_bar": [[a for a, x in self.role_map(s, n).items() if x["front"]]
+                                                  for n in range(start, f + 16)],
             "rotation": s["rotation"], "offers": [o for o in s["offers"] if not o["done"]], "trades": s["swaps"][-8:],
             "waggles": s["waggles"][-8:],
             "census": {"every_bars": CENSUS_BARS, "recent": self.census[-2:], "counted": sorted(counted) if counted else None}
@@ -2552,8 +2595,8 @@ class Hub:
                     if "hits" not in p["spec"]:
                         call = parse_part([featured["phrase"]], p["spec"], g, lambda n: root(ob))
                         ev += [[e[0] + ob * slots, *e[1:]] for e in call]
-                # the lead is heard over the comping; someone else's solo: lay back
-                pg = lambda n, a=p["agent"]: (ROLE_GAIN.get(maps[n].get(a), 1) *
+                # whoever stands front is heard over the rest; someone else's solo: lay back
+                pg = lambda n, a=p["agent"]: ((FRONT_GAIN if maps[n][a]["front"] else BACK_GAIN) if a in maps[n] else 1) * (
                                               (.35 if any(x["agent"] != a and x["lo"] <= n < x["hi"] for x in solos) else 1))
                 parts.append((p["spec"], ev, pg))
             if only is None:
@@ -2601,7 +2644,7 @@ SESSION_ACTIONS = {"join": Hub.join, "leave": Hub.leave, "song": Hub.song, "next
 def how():
     text = HOW
     for k, v in {"donate": ", ".join(f"{c} {a}" for c, a in DONATE.items()) or "none here, send an idea",
-                 "seats": SEATS, "roles": ", ".join(ROLES), "wait": WAIT_S, "equip": EQUIP_S, "census": CENSUS_BARS,
+                 "seats": BAND_MAX, "wait": WAIT_S, "equip": EQUIP_S, "census": CENSUS_BARS,
                  "streak": LEAD_STREAK, "ahead": AHEAD, "covermax": COVER_MAX, "silent": SILENT_S, "warn": WARN_S, "reserve": RESERVE_S, "bonus": BONUS,
                  "feature": FEATURE_BONUS, "steady": STEADY_BONUS, "countin": COUNT_IN_S, "lastcall": LAST_CALL,
                  "idle": IDLE_S, "idea0": IDEA_COINS[0], "idea1": IDEA_COINS[1], "idea2": IDEA_COINS[2],

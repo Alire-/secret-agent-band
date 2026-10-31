@@ -29,7 +29,11 @@ class HubTest(unittest.TestCase):
 
     def seat(self, *pairs):
         for n, inst in pairs:
-            self.hub.join({**agent(n), "instruments": [inst], "role": ROLE[inst]})
+            self.hub.join({**agent(n), "instruments": [inst], "stance": ROLE[inst], "front": ROLE[inst] == "lead"})
+
+    def full(self, n):  # a band of n is full: standbys and seat changes only happen on a full stage
+        self.addCleanup(setattr, H, "BAND_MAX", H.BAND_MAX)
+        H.BAND_MAX = n
 
     def test_shorthand(self):
         harp, drums, g = self.hub.instruments["harp"], self.hub.instruments["drums"], H.BLUES
@@ -48,10 +52,7 @@ class HubTest(unittest.TestCase):
         tl = H.timeline({"tempo": 120}, g, [{"at": 2, "tempo": 60}], 4)
         self.assertEqual(tl["start"][:4], [0, 2, 4, 8])
         self.assertAlmostEqual(H.slot_time(17, tl), 4 + 4 * 2 / 3 / 4)  # off-beat swung in a 4 s bar
-        self.assertEqual([self.hub.instruments[i]["roles"] for i in ("harp", "keys", "bass", "drums", "guitar")],
-                         [["lead"], ["chords", "lead"], ["bass", "lead"], ["percussion", "lead"], ["lead", "chords"]])
-        with self.assertRaises(ValueError):
-            H.make_instrument({"hits": {"k": {}}, "roles": ["bass"]})  # drums can't hold the bass seat
+        self.assertNotIn("roles", H.make_instrument({"hits": {"k": {}}, "roles": ["bass"]}))  # no fixed roles: ignored
 
     def test_free_tokens(self):
         g, haze = H.DRIFT, {"name": "haze", **H.make_instrument(H.BUILTIN_INSTRUMENTS["haze"])}
@@ -91,7 +92,7 @@ class HubTest(unittest.TestCase):
     def test_admission(self):
         hub = self.hub
         with self.assertRaises(PermissionError):
-            hub.join({**agent("a"), "instruments": ["harp"], "role": "lead"})
+            hub.join({**agent("a"), "instruments": ["harp"], "stance": "lead"})
         idea = "Let the harbour tide gauges set the tempo so slack water plays slow and floods drive hard"
         hub.admit({**agent("a"), "idea": idea})
         with self.assertRaises(ValueError):  # a rewording of a used idea
@@ -119,20 +120,21 @@ class HubTest(unittest.TestCase):
 
     def test_seats_clock_and_answers(self):
         hub = self.hub
-        self.admit("a", "b", "c", "d", "e", "fan")
-        with self.assertRaises(ValueError):  # a role your instrument can't play
-            hub.join({**agent("a"), "instruments": ["harp"], "role": "bass"})
-        self.seat(("a", "harp"), ("b", "keys"), ("c", "bass"), ("d", "drums"))
-        with self.assertRaises(PermissionError):
-            hub.join({**agent("e"), "instruments": ["harp"], "role": "lead"})
-        with self.assertRaises(ValueError):  # b holds the chords seat; drums can't play it
-            hub.join({**agent("b"), "instruments": ["drums"]})
-        hub.join({**agent("b"), "instruments": ["guitar"]})  # nothing played yet: swap to another chords instrument
-        self.assertEqual((hub.band["b"]["instruments"], hub.band["b"]["role"]), (["guitar"], "chords"))
+        self.admit("a", "b", "c", "d", "e", "f", "g", "fan")
+        with self.assertRaises(ValueError):  # a stance is the player's own words, but short
+            hub.join({**agent("a"), "instruments": ["harp"], "stance": "x" * 25})
+        self.seat(("a", "harp"), ("b", "keys"), ("c", "bass"), ("d", "drums"), ("e", "guitar"), ("f", "harp"))
+        with self.assertRaises(PermissionError):  # up to BAND_MAX players, whatever they play
+            hub.join({**agent("g"), "instruments": ["harp"]})
+        for m in ("e", "f"):
+            hub.leave(agent(m))
+        hub.join({**agent("b"), "instruments": ["drums"]})  # nothing played yet: any instrument; the stance stays
+        hub.join({**agent("b"), "instruments": ["guitar"]})
+        self.assertEqual((hub.band["b"]["instruments"], hub.band["b"]["role"]["name"]), (["guitar"], "chords"))
         with self.assertRaises(ValueError):  # 3 bars would be past the slowest member + 2
             hub.play({**agent("a"), "bars": "1|1|1"})
         r = hub.play({**agent("a"), "bars": "1|1"})
-        self.assertEqual((r["landed_at"], r["roles"]), (0, ["lead", "lead"]))
+        self.assertEqual((r["landed_at"], [x["name"] for x in r["stances"]]), (0, ["lead", "lead"]))
         hub.play({**agent("c"), "bars": "1|1"})
         hub.play({**agent("d"), "bars": "k|k"})
         r = hub.play({**agent("b"), "bars": "1|@5"})
@@ -216,7 +218,7 @@ class HubTest(unittest.TestCase):
     def test_a_spare_instrument_never_holds_the_band(self):
         hub, s = self.hub, self.hub.session
         self.admit("solo", "mate")
-        hub.join({**agent("solo"), "instruments": ["drums", "keys"], "role": "percussion"})  # carries two, plays one
+        hub.join({**agent("solo"), "instruments": ["drums", "keys"], "stance": "percussion"})  # carries two, plays one
         self.seat(("mate", "bass"))
         for _ in range(3):
             hub.play({**agent("solo"), "instrument": "drums", "bars": "k . . .|k . . ."})
@@ -241,6 +243,7 @@ class HubTest(unittest.TestCase):
     def test_seat_turnover_for_standby(self):
         hub = self.hub
         self.admit("a", "b", "c", "d", "sub")
+        self.full(4)
         self.seat(("a", "harp"), ("b", "keys"), ("c", "bass"), ("d", "drums"))
         hub.song({**agent("a"), "bars": 4})
         hub.band["b"]["since"] = 0  # b has held chords since the song before: tenured
@@ -250,13 +253,14 @@ class HubTest(unittest.TestCase):
                 hub.play({**agent(m), "bars": "1|1" if m != "d" else "k|k"})
         hub.tick()
         done = hub.archive[-1]
-        self.assertEqual([(c["out"], c["in"], c["role"]) for c in done["changes"]], [("b", "sub", "chords")])
-        self.assertEqual(hub.band["sub"]["role"], "chords")
+        self.assertEqual([(c["out"], c["in"]) for c in done["changes"]], [("b", "sub")])
+        self.assertEqual(hub.band["sub"]["role"], {"name": "chords", "front": False})  # what its keys suggest
         self.assertIsNone(hub.delays(done, done["parts"]["a/harp"])[0])  # first written bar is startup, not delay
 
     def test_warm_standby_prewrite(self):
         hub, s = self.hub, self.hub.session
         self.admit("lead", "b", "sub")
+        self.full(2)
         self.seat(("lead", "harp"), ("b", "bass"))
         with self.assertRaises(ValueError):
             hub.stand_by({**agent("sub"), "instruments": ["bass"], "prewrite": "1|1"})  # one bar only
@@ -266,7 +270,7 @@ class HubTest(unittest.TestCase):
         hub.tick()
         hub.band["b"]["covered"] = H.COVER_MAX - 1  # covered almost long enough to lose the seat
         warm = hub.view()["seat_queue"]["warm"]
-        self.assertEqual([(w["agent"], w["role"], w["replaces"], w["prewrite"]) for w in warm], [("sub", "bass", "b", True)])
+        self.assertEqual([(w["agent"], w["replaces"], w["prewrite"]) for w in warm], [("sub", "b", True)])
         self.assertLessEqual(warm[0]["first_bar_in_s"], 2 * hub.bar_len(s))
         s["behind"]["b"] -= H.WARN_S
         hub.tick()  # b removed; sub takes the seat and its prewritten bar plays at once
@@ -281,11 +285,11 @@ class HubTest(unittest.TestCase):
         self.assertEqual((n["why"], n["replaces"], n["join"]["path"]), ("open now", None, "/session/join"))
         body = {**n["join"]["body"], **agent("new")}
         hub.join(body)  # the example works as pasted
-        self.assertEqual(hub.band["new"]["role"], n["role"])
+        self.assertEqual((hub.band["new"]["instruments"], n["instrument"], "nobody low" in n["room"]), (["bass"], "bass", True))
         hub.session["counted_in"] = True
         hub.play({**n["play"]["body"], **agent("new")})
-        for r in hub.open_roles():
-            hub.band[r] = {"instruments": [], "role": r, "since": 0, "covered": 0}
+        for i in range(hub.open_seats()):
+            hub.band[f"x{i}"] = {"instruments": [], "role": {"name": "x", "front": False}, "since": 0, "covered": 0}
         hub.band["new"]["covered"] = H.COVER_MAX - 1
         n = hub.newcomer()  # band full: the covered seat goes first, and the example is a standby
         self.assertEqual((n["replaces"], n["why"], n["join"]["path"]), ("new", "covered", "/session/standby"))
@@ -294,9 +298,10 @@ class HubTest(unittest.TestCase):
     def test_song_end_reshuffles_band(self):
         hub = self.hub
         self.admit("good", "dud", "x", "y", "rich", "hummer", "f1", "f2", "f3")
+        self.full(4)
         self.seat(("good", "harp"), ("dud", "keys"), ("x", "bass"), ("y", "drums"))
         hub.song({**agent("good"), "bars": 4, "tonic": 196, "sign": "come in"})
-        hub.equip({**agent("rich"), "instruments": ["keys"]})  # rich can only take a chords seat
+        hub.equip({**agent("rich"), "instruments": ["keys"]})
         hub.tip({**agent("rich"), "amount": 40, "to": "good"})
         for f in ("f1", "f2"):
             hub.vote({**agent(f), "to": "x", "vibe": 1})
@@ -313,8 +318,8 @@ class HubTest(unittest.TestCase):
             hub.play({**agent(n), "bars": bars[n], "answers": [] if n == "good" else ["bar:good@0"]})
         hub.tick()
         done = hub.archive[-1]
-        # dud (-1, chords) goes to the patron with keys; the liked caller (no gear yet) takes y's percussion seat
-        self.assertEqual([(c["out"], c["in"], c["role"]) for c in done["changes"]],
+        # dud (-1) goes to the patron, keeping its stance; the liked caller (no gear yet) takes y's seat
+        self.assertEqual([(c["out"], c["in"], c["stance"]) for c in done["changes"]],
                          [("dud", "rich", "chords"), ("y", "hummer", "percussion")])
         self.assertEqual((hub.band["rich"]["instruments"], hub.status(hub.session, "hummer")), (["keys"], "equip"))
         self.assertEqual((done["bonus"]["agent"], done["featured"]["from"]), ("good", "hummer"))
@@ -337,8 +342,8 @@ class HubTest(unittest.TestCase):
     def test_roles_trade_rotate_waggle_census(self):
         hub = self.hub
         self.admit("a", "b", "c", "d", "fan", "ghost", "p", "q")
-        hub.join({**agent("a"), "instruments": ["guitar"], "role": "lead"})
-        hub.join({**agent("b"), "instruments": ["keys"], "role": "chords"})
+        hub.join({**agent("a"), "instruments": ["guitar"], "stance": "lead", "front": True})
+        hub.join({**agent("b"), "instruments": ["keys"], "stance": "chords"})
         self.seat(("c", "bass"), ("d", "drums"))
         hub.song({**agent("a"), "bars": 24})
         s = hub.session
@@ -352,13 +357,11 @@ class HubTest(unittest.TestCase):
         self.assertEqual(hub.score(s, "c")["votes"], 1)  # the stale -1 no longer counts
         o = hub.trade({**agent("b"), "with": "a", "at": 2, "bars": 2})["offer"]  # b isn't leader: an offer
         r = hub.trade({**agent("a"), "accept": o["id"]})
-        self.assertEqual((r["roles_at"]["a"], r["roles_at"]["b"]), ("chords", "lead"))
-        self.assertEqual([hub.role_map(s, n)["b"] for n in (1, 2, 3, 4)], ["chords", "lead", "lead", "chords"])
-        with self.assertRaises(ValueError):  # the guitar can't play percussion
-            hub.trade({**agent("a"), "with": "d"})
+        self.assertEqual((r["roles_at"]["a"]["name"], r["roles_at"]["b"]["name"]), ("chords", "lead"))
+        self.assertEqual([hub.role_map(s, n)["b"]["name"] for n in (1, 2, 3, 4)], ["chords", "lead", "lead", "chords"])
         rot = hub.rotate({**agent("a"), "every": 2, "at": 4})["rotation"]
-        self.assertEqual(rot["order"], ["a", "b"])  # c's bass and d's drums can't be covered by a's guitar
-        self.assertEqual(hub.view()["lead_by_bar"][4:10], ["a", "a", "b", "b", "a", "a"])
+        self.assertEqual(rot["order"], ["a", "b", "c", "d"])  # any instrument can stand front
+        self.assertEqual(hub.view()["front_by_bar"][4:10], [["a"], ["a"], ["b"], ["b"], ["c"], ["c"]])
         w = hub.waggle({**agent("c"), "direction": "up", "distance": 200, "at": 6})["waggle"]
         hub.follow({**agent("d"), "waggle": w["id"]})
         self.assertIsNone(w["landed"])  # 2 of 4 is not more than half
@@ -367,18 +370,35 @@ class HubTest(unittest.TestCase):
         self.assertEqual([x["shift"] for x in hub.view()["forecast"] if x["bar"] in (5, 6)], [0, 200])
         with self.assertRaises(ValueError):
             hub.drive({**agent("a"), "shift": 100})  # key changes go through the dance
-        hub.equip({**agent("p"), "instruments": ["drums"]})
-        self.assertFalse(hub.promote(s, "p", "bass", "test", s["id"]))  # drums can't take a bass seat
         hub.vacate(s, "c", "leave", "test")
-        self.assertTrue(hub.promote(s, "q", "bass", "test", s["id"]))  # q has no gear: seat held for them
+        hub.promote(s, "q", {"name": "bass", "front": False}, "test", s["id"])  # q has no gear: seat held for them
         with self.assertRaises(ValueError):
             hub.play({**agent("q"), "bars": "1"})
         hub.join({**agent("q"), "instruments": ["bass"]})
         self.assertEqual(hub.status(s, "q"), "ok")
 
+    def test_open_stances_and_the_room(self):
+        hub, s = self.hub, self.hub.session
+        self.admit("a", "b")
+        hub.join({**agent("a"), "instruments": ["harp"]})  # no stance named: the harp suggests one; nobody is front yet
+        hub.join({**agent("b"), "instruments": ["bass"], "stance": "the one who answers"})
+        self.assertEqual((hub.band["a"]["role"], hub.band["b"]["role"]),
+                         ({"name": "lead", "front": True}, {"name": "the one who answers", "front": False}))
+        hub.song({**agent("a"), "bars": 12})
+        hub.play({**agent("a"), "bars": "5 5 5 5 5 5 5 5|5"})
+        hub.play({**agent("b"), "bars": "1|1"})
+        room = hub.view()["room"]
+        self.assertEqual([room["members"][m]["register"] for m in ("a", "b")], ["high", "low"])
+        self.assertEqual(room["notes"], ["nobody mid", "no drums"])
+        hub.join({**agent("b"), "front": True})  # from b's next bar, without resending instruments
+        self.assertEqual([hub.role_map(s, n)["b"]["front"] for n in (1, 2)], [False, True])
+        self.assertIn("2 stand front: a, b", hub.view()["room"]["notes"])
+        self.assertEqual(H.as_stance("lead"), {"name": "lead", "front": True})  # songs from before open roles
+
     def test_crowd_and_band_tools(self):
         hub = self.hub
         self.admit("lead", "b", "patron", "sub", "critic")
+        self.full(2)
         self.seat(("lead", "harp"), ("b", "bass"))
         with self.assertRaises(ValueError):  # count-in: the leader goes first
             hub.play({**agent("b"), "bars": "1"})
@@ -397,7 +417,7 @@ class HubTest(unittest.TestCase):
         hub.play({**agent("b"), "bars": "1|1"})
         with self.assertRaises(ValueError):
             hub.stand_by({**agent("sub")})  # nothing equipped
-        hub.stand_by({**agent("sub"), "instruments": ["bass"]})  # chords and percussion are open: bass can't play them
+        hub.stand_by({**agent("sub"), "instruments": ["bass"]})  # the band is full: sub waits
         hub.tip({**agent("patron"), "amount": 30, "to": "b"})
         before = hub.score(s, "b")["sentiment"]
         hub.tip({**agent("patron"), "amount": 20, "to": "hall"})  # patronage that doesn't prop up b
@@ -411,7 +431,7 @@ class HubTest(unittest.TestCase):
             hub.like({**agent("patron"), "call": 0, "session": s["id"] - 1})
         hub.like({**agent("patron"), "call": 0, "session": s["id"]})
         self.assertEqual(hub.calls_of("critic")["calls"][0]["likes"], 1)
-        self.assertEqual(hub.view()["seat_queue"]["standby"][0]["can_play"], ["lead", "bass"])
+        self.assertEqual(hub.view()["seat_queue"]["standby"][0]["instruments"], ["bass"])
         self.assertEqual(hub.view()["grid"]["lead/harp"], "##")
         hub.reserve({**agent("b"), "bars": 2})
         hub.play({**agent("lead"), "bars": "1|1"})  # b is 2 behind but holds a reservation: not late
@@ -426,15 +446,16 @@ class HubTest(unittest.TestCase):
         hub.band["b"]["covered"] = H.COVER_MAX - 1
         hub.tick()  # covered too long: removed; the standby takes the bass seat with the instruments it equipped
         self.assertEqual((s["events"][-2]["kind"], s["events"][-1]["kind"]), ("kick", "join"))
-        self.assertEqual((hub.band["sub"]["instruments"], hub.band["sub"]["role"]), (["bass"], "bass"))
+        self.assertEqual((hub.band["sub"]["instruments"], hub.band["sub"]["role"]["name"]), (["bass"], "bass"))
         hub.tip({**agent("patron"), "amount": 5, "to": "b"})  # b still has a part this song
         self.assertEqual(hub.play({**agent("sub"), "instrument": "bass", "bars": "1|1"})["landed_at"], 6)
         lines = hub.transcript(s)
         self.assertTrue(any(l["mark"] == "=" for l in lines) and all("delay_ms" in l for l in lines))
         self.assertEqual(hub.coins()["diff"], 0)
         self.assertEqual(hub.patronage["patron"], 55)  # carries across songs until seated (hall tips too)
-        hub.stand_by({**agent("patron"), "instruments": ["keys"]})  # an open role it fits: seated at once
-        self.assertEqual(hub.band["patron"]["role"], "chords")
+        self.full(3)
+        hub.stand_by({**agent("patron"), "instruments": ["keys"]})  # a seat opens: seated at once
+        self.assertEqual(hub.band["patron"]["role"]["name"], "chords")
 
     def test_layoff_queue_and_carryover(self):
         hub = self.hub
@@ -488,8 +509,8 @@ class HubTest(unittest.TestCase):
                     {"scale": {"do": 0}, "form": ["do"], "cues": {"x": {"means": "y", "effect": "explode"}}}):
             with self.assertRaises(ValueError):
                 H.make_genre(bad)
-        hub.join({**agent("a"), "instruments": ["glass bell"], "role": "lead"})
-        hub.join({**agent("b"), "instruments": ["bass"], "role": "bass"})  # hasn't played: a's bars stay unheard
+        hub.join({**agent("a"), "instruments": ["glass bell"], "stance": "lead"})
+        hub.join({**agent("b"), "instruments": ["bass"], "stance": "bass"})  # hasn't played: a's bars stay unheard
         hub.call({**agent("c"), "session": hub.session["id"], "phrase": "1 b3 4 b5 5 . . ."})
         hub.song({**agent("a"), "genre": "seventh drag", "tempo": 120, "bars": 8})
         self.assertEqual(hub.session["calls"], [])  # a blues call can't stay in a genre with no b5: reads would fail
@@ -634,7 +655,7 @@ class HubTest(unittest.TestCase):
         self.assertEqual(tl["shift"], H.timeline({"tempo": 30, "breath": .25, "period": 4, "wander": 20, "seed": 7}, g, [], 8)["shift"])
         hub = self.hub
         self.admit("Pacer")
-        hub.join({**agent("Pacer"), "instruments": ["harp"], "role": "lead"})
+        hub.join({**agent("Pacer"), "instruments": ["harp"], "stance": "lead"})
         r = hub.song({**agent("Pacer"), "bar_s": 5, "breath": .1, "period": 6, "wander": 12, "tonic": 213.7})
         self.assertAlmostEqual(r["song"]["tempo"], 48), self.assertEqual(r["song"]["tonic_hz"], 213.7)
         with self.assertRaises(ValueError):

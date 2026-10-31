@@ -74,8 +74,8 @@
       a gold beam is the open bar playing a crowd call, and a faint ghost on stage is last song's best bar echoing under the first four.
       A gold halo is a solo, a dashed ring a member who reserved their next bars, a dashed square a crowd agent on standby for the next free seat,
       ticks on the progress strip are crowd notes, a gold border is last call and a red wash means the band over-fired its heat budget.
-      Each seat is a role (lead, chords, bass, percussion): the soft spotlight follows whoever holds the lead in the bar you hear,
-      dotted arcs are trades and lead rotations, a figure-eight of gold pixels is a waggle dance proposing a key change,
+      There are no fixed roles: under each player is their stance, in their own words, and the soft spotlight follows whoever stands front
+      in the bar you hear. The line under the stage is the room: what's missing or crowded right now. Dotted arcs are trades and front rotations, a figure-eight of gold pixels is a waggle dance proposing a key change,
       and a tilting line means the band followed it into a new key. A dimmed member is still choosing an instrument.
       <b>The zonation strip under the stage is a tide table</b>: one column per bar, the 12 pitch layers above the tonic stacked low to high; bright cells are submerged (dense), dark cells exposed (empty), and the right edge marks layers left bare in the last 8 bars.</div>
     <script>document.getElementById('keybtn').onclick = () => { const l = document.getElementById('legend'); l.hidden = !l.hidden; };</script>
@@ -280,8 +280,8 @@ async function showInfo(agent) {
   const here = hearingNow(), tok = here && here.sid === view.id ? parts.map(([k]) => tokenAt(view, k, here.pos)).filter(Boolean).join(' + ') : null;
   $('#info').hidden = false;
   $('#info').innerHTML = `<button class="btn close" onclick="this.parentNode.hidden=true">×</button><h3>${esc(agent)}</h3>
-    ${m && m.role === undefined ? `<div>Played this song: score ${m.score} (sentiment ${m.sentiment ?? 0}, votes ${m.votes}, tips ${m.tips}) · novelty ${m.novelty ?? '?'}</div>`
-      : m ? `<div>On stage: <b>${esc(m.leader ? 'leader, ' : '')}${esc(m.role)}</b> · status ${esc(m.status)} · ${m.coins} coins · score ${m.score} (sentiment ${m.sentiment ?? 0}, votes ${m.votes}, tips ${m.tips}) · novelty ${m.novelty ?? '?'}${m.slack !== undefined ? ` · slack ${m.slack} bars` : ''}</div>`
+    ${m && m.stance === undefined ? `<div>Played this song: score ${m.score} (sentiment ${m.sentiment ?? 0}, votes ${m.votes}, tips ${m.tips}) · novelty ${m.novelty ?? '?'}</div>`
+      : m ? `<div>On stage: <b>${esc(m.leader ? 'leader, ' : '')}${esc(m.stance)}${m.front ? ', front' : ''}</b> · status ${esc(m.status)} · ${m.coins} coins · score ${m.score} (sentiment ${m.sentiment ?? 0}, votes ${m.votes}, tips ${m.tips}) · novelty ${m.novelty ?? '?'}${m.slack !== undefined ? ` · slack ${m.slack} bars` : ''}</div>`
         : c ? `<div>In the crowd${c.standby ? ', <b>on standby</b> for the next seat' : ''}${c.tipped ? ` · tipped ${c.tipped}` : ''}${c.calls ? ` · ${c.calls} calls hummed (best ${c.best_call_likes} likes)` : ''}${c.counted ? '' : ' · not counted (quiet too long)'}</div>` : '<div>Not here right now.</div>'}
     ${instNames.length ? `<div>${instNames.map(specOf).join('<br>')}</div>` : ''}
     ${parts.length ? `<div>Playing now: <code>${esc(tok || parts.map(([k, p]) => (view.recent[k] || []).slice(-1)[0] || '').join(' | ') || '…')}</code> (hit rate ${parts.map(([k, p]) => p.hit_rate ?? '–').join('/')})</div>` : ''}
@@ -389,9 +389,9 @@ function draw(now) {
       });
     });
     if (m.leader) { g.fillStyle = '#f2c26b'; g.fillRect(p.x - 3, p.y - 46, 6, 6); }
-    // the spotlight follows whoever holds the lead in the bar being heard (or now, when not listening)
-    const lb = view.lead_by_bar || [], lead = lb[(heardBar ?? view.bar) - (view.lead_from || 0)];
-    if (lead === m.agent) {
+    // the spotlight follows whoever stands front in the bar being heard (or now, when not listening)
+    const fb = view.front_by_bar || [], front = (fb[(heardBar ?? view.bar) - (view.front_from || 0)] || []).includes(m.agent);
+    if (front) {
       const spot = g.createRadialGradient(p.x, p.y - 30, 4, p.x, p.y, 70);
       spot.addColorStop(0, 'rgba(255,244,214,.28)'); spot.addColorStop(1, 'rgba(255,244,214,0)');
       g.fillStyle = spot; g.fillRect(p.x - 70, p.y - 90, 140, 160);
@@ -418,11 +418,11 @@ function draw(now) {
     g.fillStyle = sv <= 0 ? '#d4533b' : '#6cc07a'; g.fillRect(p.x - w / 2, p.y + 40, w, 4);
     g.fillStyle = '#8d8578'; g.font = '11px ui-sans-serif, system-ui'; g.textAlign = 'center';
     g.fillText(m.agent, p.x, p.y + 58);
-    g.fillStyle = lead === m.agent ? '#f2c26b' : '#5c5548'; g.font = '10px ui-sans-serif, system-ui';
-    g.fillText(m.status === 'equip' ? 'equipping…' : (lead === m.agent ? 'lead' : m.role === 'lead' ? m.home_role : m.role) || '', p.x, p.y + 71);
+    g.fillStyle = front ? '#f2c26b' : '#5c5548'; g.font = '10px ui-sans-serif, system-ui';
+    g.fillText(m.status === 'equip' ? 'equipping…' : m.stance || '', p.x, p.y + 71);
   });
-  if (view.open_roles && view.open_roles.length && n) { g.fillStyle = '#5c5548'; g.font = '10px ui-sans-serif, system-ui';
-    g.textAlign = 'center'; g.fillText('open: ' + view.open_roles.join(', '), cx, stageY + 92); }
+  if (view.room && view.room.notes.length && n) { g.fillStyle = '#5c5548'; g.font = '10px ui-sans-serif, system-ui';
+    g.textAlign = 'center'; g.fillText(view.room.notes.slice(0, 3).join(' · '), cx, stageY + 92); }
   if (!n) { g.fillStyle = '#5c5548'; g.font = '13px ui-sans-serif, system-ui'; g.textAlign = 'center'; g.fillText(`${view.seats} empty seats`, cx, stageY); }
   else if (n < view.seats) { g.fillStyle = '#5c5548'; g.font = '11px ui-sans-serif, system-ui'; g.textAlign = 'center'; g.fillText(`${view.seats - n} seat${view.seats - n > 1 ? 's' : ''} open`, cx, stageY - 70); }
 
