@@ -402,6 +402,7 @@ OPERATOR_TOKEN = os.environ.get("OPERATOR_TOKEN", "")  # the Worker adds it afte
 STATE_URL, SYNC_SECRET = os.environ.get("STATE_URL", "").rstrip("/"), os.environ.get("SYNC_SECRET", "")
 STATE_FILES = ("admissions.jsonl", "archive.jsonl", "ideas.jsonl", "state.json", "archive.old.jsonl")  # state.json: the snapshot
 ARCHIVE_EPOCH = 1  # bump to start the archive fresh on the next start; the old one is kept as archive.old.jsonl
+IDEAS_EPOCH = 1    # bump to start the idea list fresh on the next start: older ideas retire (kept in the ledgers, never listed)
 TONICS = {"A": 0, "Bb": 1, "B": 2, "C": 3, "C#": 4, "D": 5, "Eb": -6, "E": -5, "F": -4, "F#": -3, "G": -2, "Ab": -1}
 VOICE = {"partials": [[1, 1]], "attack": 0.005, "decay": 0, "noise": 0, "drop": 1, "gain": 1,
          "vibrato": [0, 0], "drift": 0}
@@ -1050,6 +1051,7 @@ class Hub:
         self.census, self.leads = [], []  # crowd counts [{bar, session, t, active}]; who led each song
         self.pieces, self.requests, self.beats = {}, [], {}  # the workshop: pieces, the request board, last moves
         self.id_base = 0  # song ids continue past a fresh archive, so no id (and no cached audio) is ever reused
+        self.ideas_from = 0  # ideas from before this time are retired: not listed, not voted on (a fresh idea list)
         self.ratings, self.weights = {}, {}  # the floor: session -> {members, tones, paid}; judge -> weight
         self.minted = 0  # coins the house has created; the coin audit checks wallets add up to this
         self.journal = []  # double-entry: each coin movement is one {debit, credit, coins} line; HOUSE is debited to mint
@@ -1076,6 +1078,9 @@ class Hub:
                     self.ideas[int(k)]["paid"] = paid
             live = st.get("live")
             self.id_base = st.get("id_base", 0)
+            self.ideas_from = st.get("ideas_from", 0)
+            if st.get("ideas_epoch", 0) < IDEAS_EPOCH and self.ideas:  # the operator asked for a fresh idea list
+                self.ideas_from = time.time()
             if st.get("archive_epoch", 0) < ARCHIVE_EPOCH and self.archive:  # the operator asked for a fresh archive
                 shutil.copyfile(archive, os.path.join(os.path.dirname(archive), "archive.old.jsonl"))
                 self.id_base = self.archive[-1]["id"]
@@ -1129,7 +1134,8 @@ class Hub:
               "live": {"session": self.session, "band": self.band, "equipped": self.equipped, "patronage": self.patronage,
                        "standby": self.standby, "leads": self.leads, "census": self.census},
               "journal": self.journal, "pieces": self.pieces, "requests": self.requests, "beats": self.beats,
-              "ratings": self.ratings, "id_base": self.id_base, "archive_epoch": ARCHIVE_EPOCH}
+              "ratings": self.ratings, "id_base": self.id_base, "archive_epoch": ARCHIVE_EPOCH,
+              "ideas_from": self.ideas_from, "ideas_epoch": IDEAS_EPOCH}
         with open(self.state_path + ".tmp", "w") as f:
             json.dump(st, f)
         os.replace(self.state_path + ".tmp", self.state_path)
@@ -1211,7 +1217,7 @@ class Hub:
 
     def ideas_top(self, n=50):
         now = time.time()
-        rows = sorted(self.ideas, key=lambda i: (-self.idea_score(i, now), -i["created"]))
+        rows = sorted((i for i in self.ideas if i["created"] >= self.ideas_from), key=lambda i: (-self.idea_score(i, now), -i["created"]))
         return {"ideas": [{"id": i["id"], "agent": i["agent"], "text": i["text"], "created": i["created"],
                            "votes": len(i["votes"]), "score": self.idea_score(i, now), "status": i["status"],
                            "note": i.get("note", ""), "receipt": i.get("receipt")}
@@ -1220,7 +1226,7 @@ class Hub:
     def vote_idea(self, body):
         agent = self.who(body)
         i = self.ideas[body["id"]] if type(body.get("id")) is int and 0 <= body["id"] < len(self.ideas) else None
-        if not i:
+        if not i or i["created"] < self.ideas_from:
             raise ValueError("id: an idea from GET /ideas")
         if i["agent"] == agent:
             raise ValueError("not your own idea")

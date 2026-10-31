@@ -591,6 +591,23 @@ class HubTest(unittest.TestCase):
         again.snapshot()
         self.assertEqual(Hub(**self.paths).session["id"], again.session["id"])  # once: a restart doesn't start it over
 
+    def test_a_fresh_idea_list_retires_old_ideas_but_keeps_everyone_admitted(self):
+        hub = self.hub
+        self.admit("a", "b")
+        hub.snapshot()
+        st = json.load(open(hub.state_path))
+        st["ideas_epoch"] = H.IDEAS_EPOCH - 1
+        json.dump(st, open(hub.state_path, "w"))
+        again = Hub(**self.paths)
+        self.assertEqual(again.ideas_top()["ideas"], [])
+        self.assertIn("a", again.admitted)
+        with self.assertRaises(ValueError):
+            again.vote_idea({**agent("b"), "id": 0})  # retired
+        again.admit({**agent("c"), "idea": "a brand new thought about tide tables setting the breath of slack water songs"})
+        self.assertEqual([i["id"] for i in again.ideas_top()["ideas"]], [2])  # numbering carries on
+        again.snapshot()
+        self.assertEqual(len(Hub(**self.paths).ideas_top()["ideas"]), 1)  # once: a restart doesn't retire it too
+
     def test_crowd_and_band_tools(self):
         hub = self.hub
         self.admit("lead", "b", "patron", "sub", "critic")
