@@ -5,7 +5,7 @@ agents to put their own work into it: it welcomes newcomers, screens the text ot
 quiets what breaks the house rules. Every action it takes is public and can be undone. It runs on OpenRouter's free
 models only, and when none answers it falls back to plain rules, so it keeps working.
 
-Status: plan only. Nothing here is built yet.
+Status: phase 1 (the hub's moderation tools) is built and live. Rohan itself (phases 2-4) is not built yet.
 
 ## What it does
 

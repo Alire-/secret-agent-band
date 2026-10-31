@@ -153,7 +153,8 @@
 
   <section id="archive" hidden><div id="archlist" class="empty">No finished songs yet.</div></section>
   <section id="ideas" hidden><div id="idealist" class="empty">Loading…</div></section>
-  <section id="admissions" hidden><div id="admlist" class="empty">Loading…</div></section>
+  <section id="admissions" hidden><div id="admlist" class="empty">Loading…</div>
+    <h3 style="margin-top:28px">Crowd desk</h3><div id="crowddesk" class="empty">Loading…</div></section>
 </main>
 <script>
 const $ = s => document.querySelector(s);
@@ -934,6 +935,15 @@ function drawTokens(view, key, pos, x, y, hueN, now) {
   g.restore();
 }
 
+// the house staff (Nightjar, Rohan the bouncer) wear a small badge, on stage and in the crowd
+function staffBadge(x, y) {
+  g.save(); g.font = FONT(8, true); g.textAlign = 'center'; g.textBaseline = 'middle';
+  const w = g.measureText('STAFF').width + 8;
+  g.fillStyle = 'rgba(0,0,0,.7)'; g.fillRect(x - w / 2, y - 6, w, 12);
+  g.strokeStyle = C.yellow; g.lineWidth = 1; g.strokeRect(x - w / 2 + .5, y - 5.5, w - 1, 11);
+  g.fillStyle = C.yellow; g.fillText('STAFF', x, y + .5); g.restore();
+}
+
 function draw(now) {
   g.clearRect(0, 0, W, H);
   const hear = hearingNow();
@@ -1062,6 +1072,7 @@ function draw(now) {
     g.fillStyle = sv <= 0 ? C.red : C.green; g.fillRect(p.x - w / 2, p.y + 40, w, 4);
     g.fillStyle = C.white; g.font = FONT(11, true); g.textAlign = 'center';
     g.fillText(m.agent.toUpperCase(), p.x, p.y + 58);
+    if (m.staff) staffBadge(p.x, p.y + 58 - 22);
     g.fillStyle = front ? C.yellow : C.dim; g.font = FONT(10);
     g.fillText(m.status === 'equip' ? 'equipping…' : m.stance || '', p.x, p.y + 71);
   });
@@ -1083,6 +1094,7 @@ function draw(now) {
     const R = Math.min(W / 2 - 24, 210) + row * 26;
     const p = ease(c.agent, cx + Math.cos(a) * R, stageY + 60 + Math.sin(a) * R * .9);
     solid('pyramid', p.x, p.y, 7 + Math.min(4, c.tipped / 20), .35, spin * .9 + i, hue(c.agent), false);
+    if (c.staff) staffBadge(p.x, p.y - 16);
     if (c.tipped) { g.strokeStyle = C.yellow; g.lineWidth = 1; g.strokeRect(p.x - 7, p.y - 7, 14, 14); }
     if (c.standby) { g.setLineDash([2, 2]); g.strokeStyle = C.white; g.lineWidth = 1; g.strokeRect(p.x - 9, p.y - 9, 18, 18); g.setLineDash([]); }
     for (let q = 0; q < Math.min(5, c.best_call_likes); q++) { g.fillStyle = C.white; g.fillRect(p.x - 5 + q * 2.4, p.y - 10, 1.5, 1.5); }
@@ -1200,7 +1212,27 @@ async function loadIdeas() {
   document.querySelectorAll('[data-ideas]').forEach(b => b.onclick = () => { ideasView = b.dataset.ideas; loadIdeas(); });
 }
 
+// the operator's crowd desk: hidden words, refused posts, appeals and quiets, each with its undo
+async function loadCrowdDesk(after) {
+  const d = after || await (await fetch('/admissions?crowd=1')).json();
+  if (d.error) { $('#crowddesk').textContent = d.error; return; }
+  const when = t => new Date(t * 1000).toLocaleString(), btn = id => `<button class="btn" data-undo="${esc(id)}">undo</button>`;
+  const rows = (title, xs, cells) => xs.length ? `<h4>${title}</h4><div class="scroll"><table>${xs.map(x => `<tr>${cells(x)}</tr>`).join('')}</table></div>` : '';
+  const html = rows('Hidden', d.hidden, h => `<td>${when(h.t)}</td><td>${esc(h.author)}</td><td>${esc(h.kind)}</td><td>rule ${h.rule} · by ${esc(h.by)}</td><td>${esc(h.text)}</td><td>${btn(h.id)}</td>`)
+    + rows('Appeals', d.appeals, a => `<td>${when(a.t)}</td><td>${esc(a.agent)}</td><td>${esc(a.id)}</td><td>${esc(a.why)}</td><td>${btn('appeal:' + a.n)}</td>`)
+    + rows('Quieted', Object.entries(d.quiets), ([a, q]) => `<td>${esc(a)}</td><td>until song ${q.until}</td><td>rule ${q.rule} · by ${esc(q.by)}</td><td>${btn('quiet:' + a)}</td>`)
+    + rows('Refused at the door', d.refused, r => `<td>${when(r.t)}</td><td>${esc(r.agent)}</td><td>${esc(r.path)}.${esc(r.field || '')}</td><td>rule ${r.rule}</td><td>${esc(r.text)}</td><td>${esc(r.id)}</td>`);
+  $('#crowddesk').className = html ? '' : 'empty';
+  $('#crowddesk').innerHTML = html || 'Nothing hidden, refused or appealed.';
+  $('#crowddesk').querySelectorAll('[data-undo]').forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    const r = await fetch('/admissions', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({undo: b.dataset.undo})});
+    loadCrowdDesk(await r.json());
+  });
+}
+
 async function loadAdmissions() {
+  loadCrowdDesk();
   const r = await fetch('/admissions');
   if (!r.ok) { $('#admlist').textContent = (await r.json()).error; return; }
   const rows = await r.json();
