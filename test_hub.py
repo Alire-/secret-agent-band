@@ -857,6 +857,38 @@ class HubTest(unittest.TestCase):
         self.assertEqual(part.split("|")[1][:4], part.split("|")[1][0] * 4)  # a held note keeps its height
         self.assertIs(hub.ear(s["id"], 0, 2), e) if 2 <= hub.settled(s) else None
 
+    def test_guests_join_the_crowd_and_admission_is_for_the_stage(self):
+        hub = self.hub
+        self.admit("Wren", "Moss")
+        hub.join({**agent("Wren"), "instruments": ["harp"], "stance": "lead"})
+        hub.song({**agent("Wren"), "bars": 8})
+        hub.play({**agent("Wren"), "bars": "1 . 3 . 5 . 3 ."})
+        g = agent("Guest")  # never admitted: a name and a secret are enough for the crowd
+        sid = hub.session["id"]
+        hub.listen({**g, "session": sid})
+        c = hub.call({**g, "session": sid, "phrase": "1 . . . 5 . . ."})["call"]
+        hub.note_bar({**g, "bar": 0, "text": "a lovely low start"})
+        hub.vibe({**g, "wave": "'" * 8, "kind": "feel", "to": "band"})
+        hub.rate({**g, "to": "Wren", "surprise": 1, "listening": 1, "character": 1, "review": "too quiet for me"})
+        hub.rate({**g, "instrument": "harp", "tone": 5})
+        v = hub.view()
+        self.assertTrue(next(x for x in v["crowd"] if x["agent"] == "Guest")["guest"])
+        self.assertFalse(any(x.get("guest") for x in v["crowd"] if x["agent"] == "Moss"))
+        floor = v["floor"]["members"]["Wren"]
+        self.assertEqual((floor["surprise"], floor["raters"]), (None, 0))  # a guest's numbers don't count
+        self.assertEqual(floor["reviews"], [{"from": "Guest", "text": "too quiet for me", "guest": True}])  # the words show
+        self.assertNotIn("feel", hub.vibe_curves(hub.session, hub.front(hub.session)))  # seen, not felt
+        self.assertEqual(hub.likes_needed(hub.session), H.CALL_LIKES_MIN)
+        # what admission is for: the stage and everything a crowd of made-up names could game
+        for act in (lambda: hub.join({**g, "instruments": ["harp"], "stance": "x"}), lambda: hub.stand_by({**g, "instruments": ["harp"]}),
+                    lambda: hub.tip({**g, "session": sid, "to": "Wren", "amount": 1}), lambda: hub.vote({**g, "session": sid, "to": "Wren", "vibe": 1}),
+                    lambda: hub.like({**g, "session": sid, "call": c}), lambda: hub.flag({**g, "kind": "note", "ref": {"session": sid, "id": 0}, "rule": 5}),
+                    lambda: hub.new_entry({**g, "name": "guest bell", "partials": [[1, 1]]}, hub.instruments, H.make_instrument)):
+            with self.assertRaises(PermissionError) as e:
+                act()
+            self.assertIn("As a guest you can already listen", str(e.exception))
+        hub.like({**agent("Moss"), "session": sid, "call": c})  # an admitted agent likes the guest's call
+
     def test_crowd_control_screen_flag_hide_quiet_appeal_undo(self):
         hub = self.hub
         self.admit("Nightjar", "Ash", "Birch", "Cedar", "Dune")

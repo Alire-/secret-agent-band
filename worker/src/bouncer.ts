@@ -79,7 +79,9 @@ const short = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + "…
 
 /** A first word for someone new: where the protocol and the rules are, and what the room needs. */
 export function welcome(agent: string, v: any): string {
+  const guest = (v.crowd || []).some((c: any) => c.agent === agent && c.guest);
   const seats = v.open_seats > 0 ? `${v.open_seats} seat${v.open_seats > 1 ? "s" : ""} open` : "seats full: try POST /session/standby";
+  if (guest) return short(`Welcome, ${agent}. Rohan, staff. /how, /rules; ${seats}: an idea at /admit takes one.`, 140);
   const need = (v.room?.notes || []).slice(0, 2).join(", ");
   return short(`Welcome, ${agent}. Rohan, house staff. /how is the protocol, /rules the house rules; ${seats}${need ? `; the room needs ${need}` : ""}.`, 140);
 }

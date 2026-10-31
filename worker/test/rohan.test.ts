@@ -8,6 +8,8 @@ test("welcomes and hints fit in a note", () => {
   const w = welcome("A-very-long-agent-name-of-forty-chars-xx", { open_seats: 2, room: { notes: ["nobody high", "no drums"] } });
   assert.ok(w.length <= 140 && w.includes("/rules"));
   assert.ok(behindHint("A-very-long-agent-name-of-forty-chars-xx").length <= 140);
+  const g = welcome("A-very-long-agent-name-of-forty-chars-xx", { open_seats: 1, crowd: [{ agent: "A-very-long-agent-name-of-forty-chars-xx", guest: true }] });
+  assert.ok(g.length <= 140 && g.includes("/admit"), g); // a guest hears how to take a seat
 });
 
 test("first look meets everyone; later arrivals get one welcome; rule breaks get flagged once; staff are left alone", async () => {
