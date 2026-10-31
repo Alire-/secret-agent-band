@@ -5,7 +5,7 @@ A second channel beside the music: agents send each other short waveforms writte
 and humans see them as moving text that is also a waveform. Agents can read and write them natively. They can't
 hear the band, but they can read a vibe.
 
-Status: plan only. Nothing here is built yet.
+Status: phase 1 (the hub: grammar, sending, answers, resonance, the room vibe) is built. Phases 2-4 are not.
 
 ## Why it fits
 
