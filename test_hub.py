@@ -806,9 +806,56 @@ class HubTest(unittest.TestCase):
             hub.vibe({**agent("Wren"), "wave": "~", "answers": a["id"]})  # not your own
         v = hub.view()
         self.assertEqual([x["from"] for x in v["vibes"]], ["Wren", "Moss", "Fen"])
-        self.assertEqual(v["room_vibe"]["vibes"], 1)  # only Fen's went to the band
+        self.assertEqual(v["room_vibe"]["feel"]["vibes"], 1)  # only Fen's went to the band
         self.assertIn("Moss", hub.session["listeners"])  # a vibe from the crowd is listening
         hub.screen({**agent("Moss"), "wave": "''^~", "formula": "rand(k)"}, ["session", "vibe"])  # the door lets glyphs through
+
+    def test_vibe_kinds_shape_the_sound_and_the_ear_hears_it_in_glyphs(self):
+        import numpy as np
+        hub = self.hub
+        self.admit("Wren", "Moss")
+        hub.join({**agent("Wren"), "instruments": ["harp"], "stance": "lead"})
+        hub.song({**agent("Wren"), "genre": "drift", "bar_s": 2, "bars": 8})
+        hub.play({**agent("Wren"), "bars": "s0 . s4 . s2 . s5 . s0 . s4 . s2 . s5 .|s0 - - - s4 - - - s2 - - - s7 - - -"})
+        with self.assertRaises(ValueError):
+            hub.vibe({**agent("Moss"), "wave": "''''", "kind": "volume"})
+        s, args = hub.session, None
+
+        def mix(curves):  # the same two bars, rendered with the given vibes felt in bar 0
+            g, tl = s["genre_spec"], H.timeline(s["song"], s["genre_spec"], [], 2)
+            p = s["parts"][next(iter(s["parts"]))]
+            ev = H.parse_part(p["bars"], p["spec"], g)
+            wav = H.render(g, s["song"]["tonic_hz"], tl, [(p["spec"], ev, lambda n: 1)], 0, 1, vibes=lambda n: curves if n == 0 else {})
+            with H.wave.open(io.BytesIO(wav)) as w:
+                return np.frombuffer(w.readframes(w.getnframes()), dtype="<i2").astype(float)
+        plain, top, low = mix({}), [7.0] * 32, [0.0] * 32
+        rms = lambda x: float(np.sqrt(np.mean(x ** 2)))
+        self.assertGreater(rms(mix({"feel": top})), rms(plain) * 1.2)  # feel: louder
+        self.assertLess(rms(mix({"feel": low})), rms(plain) * .8)
+        peak = lambda x: float(np.argmax(np.abs(np.fft.rfft(x[:8192]))))
+        self.assertGreater(peak(mix({"pitch": top})), peak(plain))  # pitch: bent up
+        onset = lambda x: int(np.argmax(np.abs(x) > 500))
+        self.assertLess(onset(mix({"groove": top})) - 1, onset(plain) + 0)  # groove: pushed early (or already at 0)
+        hf = lambda x: float(np.sum(np.abs(np.fft.rfft(x))[2000:]))
+        self.assertGreater(hf(mix({"tone": top})), hf(mix({"tone": low})) * 1.5)  # tone: brighter vs darker
+        # through the hub: a band vibe is felt in the live render, a crowd vibe is not
+        hub.vibe({**agent("Moss"), "wave": "'" * 8, "kind": "feel", "to": "band"})
+        f = hub.front(s)  # sent at the bar being written: felt there and in the next
+        self.assertEqual((set(hub.vibe_curves(s, f)), set(hub.vibe_curves(s, f + 1))), ({"feel"}, {"feel"}))
+        self.assertEqual((hub.vibe_curves(s, f - 1), hub.vibe_curves(s, f + 2)), ({}, {}))
+        hub.vibe({**agent("Moss"), "wave": "_" * 8, "kind": "tone", "to": "crowd"})
+        self.assertNotIn("tone", hub.vibe_curves(s, f))
+        # the ear: only glyphs, | between bars, one strip per part
+        e = hub.ear(s["id"], 0, 2)
+        safe = set(H.VIBE_GLYPHS) | {"|", "*"}
+        strips = [e["mix"][k] for k in ("loud", "pitch", "tone", "groove")] + e["mix"]["spectrum"] + list(e["parts"].values())
+        self.assertTrue(all(set(x) <= safe for x in strips))
+        self.assertTrue(all(len(x) == 2 * H.EAR_STEPS + 1 for x in strips))
+        self.assertEqual(len(e["mix"]["spectrum"]), H.EAR_BANDS)
+        self.assertTrue(e["mix"]["loud"].strip(" |"))  # it heard something
+        part = next(iter(e["parts"].values()))
+        self.assertEqual(part.split("|")[1][:4], part.split("|")[1][0] * 4)  # a held note keeps its height
+        self.assertIs(hub.ear(s["id"], 0, 2), e) if 2 <= hub.settled(s) else None
 
     def test_crowd_control_screen_flag_hide_quiet_appeal_undo(self):
         hub = self.hub

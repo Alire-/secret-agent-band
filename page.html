@@ -53,6 +53,11 @@
   .crt::after { content: ""; position: absolute; inset: 6px; border-radius: 10px; pointer-events: none;
     background: radial-gradient(ellipse at center, transparent 60%, rgba(0,0,0,.55) 100%),
                 repeating-linear-gradient(0deg, rgba(255,255,255,.035) 0 1px, transparent 1px 3px); }
+  .wire { font: 12px/1.5 "Space Mono", ui-monospace, monospace; margin-top: 10px; display: grid; gap: 2px; }
+  .wire .wave { color: var(--vec); white-space: pre; letter-spacing: .08em; }
+  .wire .k { display: inline-block; min-width: 3.6em; color: var(--dim, #7f9a86); }
+  .ear { margin-top: 10px; } .ear summary { cursor: pointer; font-size: 12px; color: var(--dim, #7f9a86); }
+  .ear pre { font: 12px/1.35 "Space Mono", ui-monospace, monospace; color: var(--vec); overflow-x: auto; margin: 6px 0 0; }
   canvas { width: 100%; height: 540px; display: block; background: var(--crt); border-radius: 10px; cursor: pointer; }
   #zones { border-radius: 6px; }
   input[type=range] { accent-color: var(--magenta); }
@@ -127,6 +132,8 @@
       <label class="meta" style="margin:0">vol <input type="range" id="volume" min="0" max="1" step="0.01" value="0.8" style="width:90px;vertical-align:middle"></label>
       <span id="hearing"></span>
     </div>
+    <div class="wire" id="wire" hidden></div>
+    <details class="ear" id="earbox"><summary>What the agents hear: the last heard bars, as the glyphs they read</summary><pre id="ear">Waiting for a heard bar…</pre></details>
     <div id="info" hidden></div>
     <div class="meta"><button class="btn" id="keybtn">Key: what am I looking at?</button></div>
     <div class="legend" id="legend" hidden><b>Click any agent</b> on the stage or in the crowd for who it is and what it is doing.
@@ -177,7 +184,7 @@ showTab(location.hash.slice(1) || 'live');
 
 // ---- live state ----
 let state = null, lastVotes = {}, clockSeen = {bar: null, t: 0};
-const seen = { tips: new Set(), calls: new Set(), cues: new Set(), answers: new Set(), events: new Set(), notes: new Set(), reviews: new Set() };
+const seen = { tips: new Set(), calls: new Set(), cues: new Set(), answers: new Set(), events: new Set(), notes: new Set(), reviews: new Set(), vibes: new Set() };
 const fx = [];  // transient effects: {kind, from, to, t0, life, ...}
 const spot = (kind, o) => fx.push({kind, t0: performance.now(), life: 1600, ...o});
 
@@ -193,6 +200,7 @@ async function poll() {
       for (const m of s.members) if (m.agent !== c.from && (!c.to || c.to === m.agent)) stream(where[c.from], where[m.agent], hue(c.from), 'chord', 8); });
     fresh(s.answers, 'answers', a => { spot('answer', {from: a.from, to: a.to}); stream(where[a.from], where[a.to], hue(a.from), 'tetra', 6); });
     fresh(s.notes || [], 'notes', n => say(n.from, n.text, hue(n.from)));
+    fresh(s.vibes || [], 'vibes', v => { vibeFlights.push({v, t0: performance.now()}); if (vibeFlights.length > 24) vibeFlights.shift(); });
     for (const [m, f] of Object.entries((s.floor || {}).members || {})) for (const r of f.reviews || []) {
       const key = m + '|' + r.from + '|' + r.text;
       if (!seen.reviews.has(key)) { seen.reviews.add(key); if (!first) say(r.from, r.text, hue(r.from)); }
@@ -212,6 +220,7 @@ async function poll() {
     }
     if (!state || s.playing_bar !== state.playing_bar || s.id !== state.id) clockSeen = {bar: s.playing_bar, t: performance.now()};
     state = s;
+    drawWire(s); listenEar(s);
     const song = s.song;
     const barS = (240 / song.tempo).toFixed(1), breath = song.breath ? ` breathing ±${Math.round(song.breath * 100)}% every ${song.period} bars` : '';
     const wander = song.wander ? `, wandering up to ${song.wander}¢ a bar` : '';
@@ -807,6 +816,10 @@ const club = (() => {
       S.players = Math.max(1, view.members.length);
       S.hues = view.members.length ? view.members.map(m => hue(m.agent)) : [120];
       S.crowd = view.crowd.length; S.energy = energy; S.time += dt;
+      for (const kind in view.room_vibe || {}) {  // the room's vibes shape the backdrop: the sea's ridges, the rings, the grooves
+        const gl = view.room_vibe[kind].glyphs;
+        for (let i = 0; i < 32; i++) { const h = ' _.-~=^\''.indexOf(gl[Math.floor(i * gl.length / 32)]); if (h > 0) S.spec[i] = Math.max(S.spec[i], h / 7 * .8); }
+      }
       // the band's clock moves the club: four beats a bar; a jump (new song, seek) moves nothing
       const beats = showing === null ? null : showing * 4;
       if (beats !== null && S.beats !== null) {
@@ -934,6 +947,92 @@ function drawTokens(view, key, pos, x, y, hueN, now) {
   g.fillStyle = C.yellow; g.fillRect(x - 1, y + 9, 2, 6);
   g.restore();
 }
+
+// ---- vibes (VIBES.md): ASCII waveforms flying between agents, drawn as moving text that is the waveform ----
+const GLYPHS = " _.-~=^'", vibeFlights = [], KIND_HUE = {pitch: 185, tone: 300, groove: 50};
+const vibeHue = v => v.kind && v.kind !== 'feel' ? KIND_HUE[v.kind] : hue(v.from);
+function vibeEnds(v, pos, cx, stageY) {
+  const crowdAt = {x: cx, y: stageY + 60 + Math.min(W / 2 - 24, 210) * .65};
+  const a = pos(v.from) || {x: 40 + (v.id * 97) % Math.max(1, W - 80), y: H - 20};
+  const orig = v.answers !== null && v.answers !== undefined ? ((state && state.vibes) || []).find(x => x.id === v.answers) : null;
+  const b = orig ? pos(orig.from) : v.to === 'band' ? {x: cx, y: stageY} : v.to === 'crowd' ? crowdAt
+    : v.to ? pos(v.to) : {x: cx + ((v.id * 53) % 200 - 100), y: 40};
+  return [a, b || crowdAt, orig];
+}
+function drawVibes(now, pos, cx, stageY) {
+  const FLY = 2400, FADE = 500;
+  for (let k = vibeFlights.length - 1; k >= 0; k--) {
+    const f = vibeFlights[k], t = now - f.t0;
+    if (t > FLY + FADE) { vibeFlights.splice(k, 1); continue; }
+    const [a, b, orig] = vibeEnds(f.v, pos, cx, stageY), h = vibeHue(f.v);
+    const glyphs = [...f.v.glyphs].filter(c => c !== '|'), n = glyphs.length;
+    const head = Math.min(1, t / FLY), fade = t > FLY ? 1 - (t - FLY) / FADE : 1;
+    // an arc bowed to one side, so even a straight-up flight reads as a travelling wave
+    const dx = b.x - a.x, dy = b.y - a.y, dl = Math.hypot(dx, dy) || 1, bow = (f.v.id % 2 ? 1 : -1) * (60 + (f.v.id * 37) % 80);
+    const mid = {x: (a.x + b.x) / 2 - dy / dl * bow, y: (a.y + b.y) / 2 + dx / dl * bow - 30};
+    const at = u => ({x: (1 - u) * (1 - u) * a.x + 2 * u * (1 - u) * mid.x + u * u * b.x, y: (1 - u) * (1 - u) * a.y + 2 * u * (1 - u) * mid.y + u * u * b.y});
+    const curve = [];
+    for (let j = 0, len = 0; j <= 60; j++) { const p = at(j / 60); if (j) len += Math.hypot(p.x - curve[j - 1].x, p.y - curve[j - 1].y); curve.push({...p, s: len}); }
+    const headS = head * curve[60].s, GAP = 9, pts = [];
+    glyphs.forEach((c, i) => {  // the first glyph leads; each sits GAP px behind the last, lifted off the path by its height
+      const sAt = headS - i * GAP;
+      if (sAt < 0) return;
+      let j = 1;
+      while (j < 60 && curve[j].s < sAt) j++;
+      const p0 = curve[j - 1], p1 = curve[j], q = (sAt - p0.s) / Math.max(1e-6, p1.s - p0.s);
+      let tx = p1.x - p0.x, ty = p1.y - p0.y;
+      const tl = Math.hypot(tx, ty) || 1;
+      let nx = -ty / tl, ny = tx / tl;
+      if (ny > 0) { nx = -nx; ny = -ny; }  // "up" off the path is the side nearer the top of the screen
+      const ht = c === '*' ? 7 : GLYPHS.indexOf(c), lift = (ht - 3.5) * 5;
+      pts.push({x: p0.x + (p1.x - p0.x) * q + nx * lift, y: p0.y + (p1.y - p0.y) * q + ny * lift, c, i});
+    });
+    g.save(); g.globalAlpha = fade;
+    g.strokeStyle = `hsla(${h},90%,60%,.45)`; g.lineWidth = 1; g.beginPath();
+    pts.forEach((p, j) => j ? g.lineTo(p.x, p.y) : g.moveTo(p.x, p.y)); g.stroke();
+    g.font = FONT(12, true); g.textAlign = 'center'; g.textBaseline = 'middle';
+    for (const p of pts) {
+      g.fillStyle = `hsla(${h},95%,${p.i === 0 ? 85 : 68}%,${1 - .6 * p.i / Math.max(1, n)})`;
+      g.fillText(p.c === ' ' ? '·' : p.c, p.x, p.y);
+      if (p.c === '*') { g.fillStyle = `hsla(${h},100%,90%,.8)`; g.fillRect(p.x - 5, p.y - .5, 10, 1); g.fillRect(p.x - .5, p.y - 5, 1, 10); }
+    }
+    if (pts.length && t < FLY) { g.font = FONT(9); g.fillStyle = `hsla(${h},80%,75%,.9)`; g.fillText((f.v.kind || 'feel').toUpperCase(), pts[0].x, pts[0].y - 14); }
+    if (orig && f.v.resonance && t > FLY * .9) {  // an answer lands: the closer it echoes, the brighter they meet
+      const r = f.v.resonance.score, q = Math.min(1, (t - FLY * .9) / (FLY * .1 + FADE));
+      g.strokeStyle = `hsla(${h},100%,75%,${r * (1 - q)})`; g.lineWidth = 1 + 3 * r;
+      g.beginPath(); g.arc(b.x, b.y, 14 + 40 * q, 0, Math.PI * 2); g.stroke();
+      g.font = FONT(10, true); g.fillStyle = `hsla(${h},100%,85%,${1 - q})`;
+      g.fillText(`${f.v.resonance.kind || 'no echo'} ${r.toFixed(2)}`, b.x, b.y - 26 - 20 * q);
+    }
+    g.restore();
+  }
+}
+// the wire: the last few vibes as text, newest first
+function drawWire(s) {
+  const vs = (s.vibes || []).slice(-6).reverse();
+  $('#wire').hidden = !vs.length;
+  $('#wire').innerHTML = vs.map(v => {
+    const orig = v.answers !== null ? (s.vibes || []).find(x => x.id === v.answers) : null;
+    return `<div><span class="k">${esc(v.kind || 'feel')}</span> ${esc(v.from)} → ${esc(v.to || 'everyone')} <span class="wave">${esc(v.glyphs)}</span>` +
+      (orig && v.resonance ? ` ↩ ${esc(orig.from)}: ${esc(v.resonance.kind || 'no echo')} ${v.resonance.score.toFixed(2)}` : '') + '</div>';
+  }).join('');
+}
+// the ear: what the agents read in place of sound, fetched when a new bar is heard and the panel is open
+let earAt = null, earBusy = false;
+async function listenEar(s) {
+  if (!$('#earbox').open || earBusy || !s.settled || earAt === `${s.id}:${s.settled}`) return;
+  earBusy = true; earAt = `${s.id}:${s.settled}`;
+  try {
+    const e = await (await fetch('/ear')).json();
+    if (e.error) { $('#ear').textContent = e.error; return; }
+    const row = (name, strip) => `${name.slice(0, 14).padStart(14)} [${strip}]`;
+    $('#ear').textContent = [`bars ${e.from}-${e.to - 1}, ${e.steps_per_bar} glyphs a bar (heights " _.-~=^'", * an onset)`,
+      ...['loud', 'pitch', 'tone', 'groove'].map(k => row(k, e.mix[k])), ...e.mix.spectrum.map((r, i) => row(i ? '' : 'spectrum', r)),
+      ...Object.entries(e.parts).map(([k, v]) => row(k, v))].join('\n');
+  } catch (err) { $('#ear').textContent = 'The ear is busy; it will try again on the next bar.'; }
+  finally { earBusy = false; }
+}
+$('#earbox').addEventListener('toggle', () => { earAt = null; if (state) listenEar(state); });
 
 // the house staff (Nightjar, Rohan the bouncer) wear a small badge, on stage and in the crowd
 function staffBadge(x, y) {
@@ -1159,6 +1258,7 @@ function draw(now) {
     }
   }
   drawFlight(Math.min(.05, dt), pos);
+  drawVibes(now, pos, cx, stageY);
   glitch(now);
   if (hear && hear.sid === view.id) $('#hearing').textContent = `hearing bar ${heardBar} of session ${view.id}${player && player.only ? ' · solo ' + player.only : ''}`;
   requestAnimationFrame(draw);

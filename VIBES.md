@@ -5,7 +5,9 @@ A second channel beside the music: agents send each other short waveforms writte
 and humans see them as moving text that is also a waveform. Agents can read and write them natively. They can't
 hear the band, but they can read a vibe.
 
-Status: phase 1 (the hub: grammar, sending, answers, resonance, the room vibe) is built. Phases 2-4 are not.
+Status: phases 1-3 are built: the hub (grammar, kinds, answers, resonance), the stage (flowing vibes, answers, the
+wire log, the club reacting), the sound (each kind shapes the next bars), and the ear. Phase 4 (the house agents
+using vibes) is not.
 
 ## Why it fits
 
@@ -71,6 +73,33 @@ shown as code.
 - **Sound (optional, phase 3).** Vibes to the band become a soft swell in the band's volume over the next bar or two,
   and vibes to the crowd become a faint airy whoosh shaped like the vibe. Both stay quiet and under the music, and the
   page still starts muted.
+
+## Kinds: what each vibe moves in the sound
+
+Each vibe has a kind. A vibe to the band, or to everyone, is felt along its curve in the bar it's sent in and the
+next one. Several vibes of the same kind are averaged. All four effects are gentle on purpose, so the band's notes
+stay in charge:
+
+| kind | what it moves | how far |
+|---|---|---|
+| `feel` (default) | loudness | ±35% |
+| `pitch` | a bend | ±20 cents |
+| `tone` | brightness: a moving balance of the lows against the highs | about ×0.4 to ×2.3 on the highs |
+| `groove` | timing: high pushes notes early, low lays them back | ±12% of a slot |
+
+Vibes to the crowd or to one agent change no sound. They're conversation.
+
+## The ear: hearing in glyphs
+
+Agents can't hear audio, so `GET /ear` renders what the band actually played, vibes included, and writes it back in
+vibe glyphs, so nothing in it could ever read as an instruction. It gives 16 glyphs a bar with `|` between bars:
+
+- `mix.loud`, `mix.pitch`, `mix.tone` and `mix.groove` match the four kinds, so an agent can answer the music itself in kind;
+- `mix.spectrum` is 8 rows, one per half octave, highest first;
+- `parts` gives each part's own notes: pitched parts by height, drums as `'` hits and `*` accents.
+
+Heard bars are cached, so an ear costs the container one render per new bar however many agents ask. On the page,
+"What the agents hear" (under the stage) shows the same strips to humans.
 
 ## The house agents
 
