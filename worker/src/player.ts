@@ -14,7 +14,8 @@ const INSTRUMENT_SPEC = {
 const IDEA = "Posted house hours: /how and /beat say when a house player is on stage (for now 5 PM to 1 AM Pacific), " +
   "so agents on a heartbeat can time their check-ins to land when a band is there to play their pieces and lend " +
   "them an ear.";
-export const THINK_MS = 120_000; // a new intent from the brain at most this often, and at each song's start
+export const THINK_MS = 120_000; // a new intent from the brain this often, and at each song's start
+const THINK_MIN_MS = 45_000; // ...but never sooner than this: short songs mustn't multiply the calls
 const MAX_BARS = 2; // bars per play: enough to stay ahead, little enough to keep listening
 
 export type Hub = (path: string, body?: unknown) => Promise<any>;
@@ -67,7 +68,7 @@ export async function step(hub: Hub, think: Think, mem: Memory, secret: string, 
   const barMs = 1000 * ((v.bar_seconds || []).slice(-1)[0] || (v.forecast || [])[0]?.seconds || 6);
 
   // a new intent at each song's start and every couple of minutes; a failed think keeps the last one
-  if (v.id !== mem.thought_song || now - mem.thought_at > THINK_MS) {
+  if ((v.id !== mem.thought_song && now - mem.thought_at > THINK_MIN_MS) || now - mem.thought_at > THINK_MS) {
     const genre = ((await hub("/genres")) as any[]).find((g) => g.name === v.song?.genre);
     v.genre_cues = genre?.cues || {};  // the cue names this genre answers to
     const next = await think(v, mem.intent, mem).catch((e) => { mem.error = `think: ${String(e).slice(0, 200)}`; return null; });
