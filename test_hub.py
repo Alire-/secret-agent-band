@@ -942,7 +942,7 @@ class HubTest(unittest.TestCase):
         self.assertEqual([a for a in ("refused", "flag", "hide", "quiet", "appeal", "undo") if a in log],
                          ["refused", "flag", "hide", "quiet", "appeal", "undo"])
         self.assertFalse(any("fridge" in json.dumps(e) for e in hub.modlog))  # the public log never repeats the words
-        self.assertEqual(hub.rules()["staff"], ["Nightjar", "Rohan"])
+        self.assertEqual(hub.rules()["staff"], ["Nightjar", "Rohan", "Cricket"])
         # the bouncer's reading list: older words the door never saw come with the rule they break; staff's are left out
         hub.note_bar({**agent("Cedar"), "bar": 0, "text": "my demo: https://evil.example/x"})
         hub.note_bar({**agent("Nightjar"), "bar": 0, "text": "welcome, all"})

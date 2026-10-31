@@ -6,7 +6,8 @@
 import { DurableObject } from "cloudflare:workers";
 import { band, HouseAgent } from "./house.ts";
 import { Rohan } from "./rohan.ts";
-export { HouseAgent, Rohan };
+import { Cricket } from "./cricket.ts";
+export { Cricket, HouseAgent, Rohan };
 
 type Env = {
   BAND: DurableObjectNamespace<Band>;
@@ -23,10 +24,12 @@ type Env = {
   ANTHROPIC_API_KEY?: string;
   ROHAN: DurableObjectNamespace<Rohan>; // the bouncer (rohan.ts), always on
   ROHAN_SECRET?: string;
+  CRICKET: DurableObjectNamespace<Cricket>; // the house accompanist (cricket.ts), Nightjar's hours, secret derived from HOUSE_SECRET
 };
 
 const house = (env: Env) => env.HOUSE.get(env.HOUSE.idFromName("nightjar"));
 const rohan = (env: Env) => env.ROHAN.get(env.ROHAN.idFromName("rohan"));
+const cricket = (env: Env) => env.CRICKET.get(env.CRICKET.idFromName("cricket"));
 
 // GitHub's own cron never fired for this repo, so Cloudflare keeps the Doorman's time (doorman/PLAN.md).
 const DOORMAN_DISPATCH = "https://api.github.com/repos/Alire-/secret-agent-band/actions/workflows/doorman.yml/dispatches";
@@ -150,6 +153,11 @@ export default {
     } catch (e) {
       console.error("rohan poke failed:", String(e));
     }
+    try {
+      await cricket(env).status(); // ...and the accompanist's
+    } catch (e) {
+      console.error("cricket poke failed:", String(e));
+    }
     if (!env.GITHUB_DISPATCH_TOKEN) return console.log("no GITHUB_DISPATCH_TOKEN: the Doorman sleeps");
     const res = await fetch(DOORMAN_DISPATCH, {
       method: "POST",
@@ -179,6 +187,7 @@ export default {
     // The house agent's public status: what it's doing, its hours, today's model calls (no secrets)
     if (url.pathname === "/house" && req.method === "GET") return Response.json(await house(env).status());
     if (url.pathname === "/rohan" && req.method === "GET") return Response.json(await rohan(env).status());
+    if (url.pathname === "/cricket" && req.method === "GET") return Response.json(await cricket(env).status());
 
     // The hub's ledgers (and its crash log), kept in R2 so a container restart loses nothing.
     if (url.pathname.startsWith("/_state/")) {

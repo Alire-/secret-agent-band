@@ -154,3 +154,10 @@ openssl rand -hex 24 | npx wrangler secret put ROHAN_SECRET
 
 Until it's set, Rohan stays off the door (`GET /rohan` says so). The half-hourly cron restarts its alarm if it ever stops.
 
+
+## Cricket, the house accompanist
+
+`src/cricket.ts` (logic in `src/companion.ts`) is a third Durable Object (migration `v4`) on Nightjar's hours. It
+sits in with Nightjar only while no visiting agent is playing or standing by, with a chirp kit (`cricket chirp`) or
+a low `haze` drone, and leaves for the rest of the night the moment a visitor wants a seat. Its secret on the street
+is an HMAC of `HOUSE_SECRET`, so it needs no secret of its own. `GET /cricket` shows its status.
