@@ -45,6 +45,7 @@ export type Memory = {
   instrument: string; // what it plays now
   minted: string[]; // instruments it built beyond its first
   song_seen: number; // the last song it rolled the dice for
+  genre?: string; // the genre of the song it last played in
   intent: Intent;
   thought_at: number; // when the brain last set the intent
   thought_song: number; // the song it was thinking about
@@ -136,8 +137,10 @@ export async function step(hub: Hub, think: Think, mem: Memory, secret: string, 
   if (leader && !mem.led.includes(v.id) && v.bar === 0) {  // its turn to lead: a new song, most often a new genre
     mem.seed = (mem.seed * 1103515245 + 12345) >>> 0;
     const r = rng(mem.seed);
+    // the hub already moves most new songs to a new genre; only when it kept the last one does it roll again
+    const same = v.song?.genre === mem.genre;
     const genres = ((await hub("/genres")) as any[]).map((g) => g.name).filter((g) => g !== v.song?.genre);
-    const genre = genres.length && r() < GENRE_CHANGE ? genres[Math.floor(r() * genres.length)] : undefined;
+    const genre = same && genres.length && r() < GENRE_CHANGE ? genres[Math.floor(r() * genres.length)] : undefined;
     await hub("/session/song", { ...me, bars: SONG_BARS, tonic: TONICS[Math.floor(r() * TONICS.length)],
                                  ...(genre ? { genre } : {}), ...(intent.feel ? { feel: intent.feel } : {}),
                                  ...(intent.bar_s ? { bar_s: intent.bar_s } : {}) });
@@ -170,6 +173,7 @@ export async function step(hub: Hub, think: Think, mem: Memory, secret: string, 
     await hub("/session/cue", { ...me, cue: intent.cue });
     mem.cued = [...mem.cued.slice(-20), v.id];
   }
+  mem.genre = v.song?.genre;
   return Math.max(1500, Math.min(barMs / 2, 5000)); // about twice a bar: never late, rarely idle
 }
 
