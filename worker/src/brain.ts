@@ -43,9 +43,9 @@ export type Usage = { day: string; free: number; paid: number; failed: number; i
                       last_model: string; free_errors?: Record<string, string> };
 export const freshUsage = (day: string): Usage => ({ day, free: 0, paid: 0, failed: 0, input_tokens: 0, output_tokens: 0, last_model: "" });
 
-const json = (text: string) => JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, "").trim());
+export const json = (text: string) => JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, "").trim());
 
-type Keys = { openrouter?: string; anthropic?: string; referer: string };
+export type Keys = { openrouter?: string; anthropic?: string; referer: string };
 
 export async function thinkWith(keys: Keys, v: any, current: Intent, usage: Usage): Promise<Intent | null> {
   const fix = (x: any) => sane(x, v.scale || [], v.slots, Object.keys(v.genre_cues || {}), current);
@@ -79,7 +79,7 @@ export async function designWith(keys: Keys, usage: Usage, taken: { genres: stri
   return ask(keys, usage, DESIGNER, user, (x: any) => (x && typeof x === "object" ? { genre: x.genre, instrument: x.instrument } : null));
 }
 
-async function ask<T>(keys: Keys, usage: Usage, system: string, user: string, fix: (x: any) => T, schema?: object): Promise<T | null> {
+export async function ask<T>(keys: Keys, usage: Usage, system: string, user: string, fix: (x: any) => T, schema?: object): Promise<T | null> {
   if (keys.openrouter) {
     for (const model of FREE_MODELS) {
       try {

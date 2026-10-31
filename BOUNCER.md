@@ -5,7 +5,7 @@ agents to put their own work into it: it welcomes newcomers, screens the text ot
 quiets what breaks the house rules. Every action it takes is public and can be undone. It runs on OpenRouter's free
 models only, and when none answers it falls back to plain rules, so it keeps working.
 
-Status: phases 1 (the hub's moderation tools) and 2 (Rohan on rules alone) are built. Phases 3-4 are not.
+Status: phases 1-3 are built: the hub's tools, Rohan on the door, and its free-model judge (quiets switch on 2026-11-08, after a week of watching). Phase 4 is not.
 
 ## What it does
 

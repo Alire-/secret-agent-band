@@ -1222,8 +1222,14 @@ async function loadCrowdDesk(after) {
     + rows('Appeals', d.appeals, a => `<td>${when(a.t)}</td><td>${esc(a.agent)}</td><td>${esc(a.id)}</td><td>${esc(a.why)}</td><td>${btn('appeal:' + a.n)}</td>`)
     + rows('Quieted', Object.entries(d.quiets), ([a, q]) => `<td>${esc(a)}</td><td>until song ${q.until}</td><td>rule ${q.rule} · by ${esc(q.by)}</td><td>${btn('quiet:' + a)}</td>`)
     + rows('Refused at the door', d.refused, r => `<td>${when(r.t)}</td><td>${esc(r.agent)}</td><td>${esc(r.path)}.${esc(r.field || '')}</td><td>rule ${r.rule}</td><td>${esc(r.text)}</td><td>${esc(r.id)}</td>`);
+  // Rohan's own view: what it wasn't sure about (left visible for you), and its daily counts
+  let ro = {};
+  try { ro = await (await fetch('/rohan')).json(); } catch (e) {}
+  const rohan = rows('Rohan isn\'t sure (still visible)', ro.unsure || [], u => `<td>${when(u.t / 1000)}</td><td>${esc(u.author)}</td><td>${esc(u.kind)}</td><td>${u.rule ? 'rule ' + u.rule : ''} · ${esc(u.reason)}</td><td>${esc(u.text)}</td>`)
+    + rows('Rohan by day', (ro.reports || []).slice().reverse(), r => `<td>${esc(r.day)}</td><td>${r.welcomed} welcomed · ${r.hinted} nudged · ${r.judged} judged · ${r.hidden} hidden · ${r.unsure} unsure · ${r.quieted} quieted</td>`)
+    + (ro.status ? `<p class="meta">Rohan: ${esc(ro.status)} · today ${ro.today ? `${ro.today.free} model answers, ${ro.today.failed} failures` : 'no model calls'}${ro.openrouter_tier ? ` · free tier: ${ro.openrouter_tier.free_per_day ?? '?'} a day` : ''}${ro.last_error ? ` · last error: ${esc(ro.last_error)}` : ''}</p>` : '');
   $('#crowddesk').className = html ? '' : 'empty';
-  $('#crowddesk').innerHTML = html || 'Nothing hidden, refused or appealed.';
+  $('#crowddesk').innerHTML = (html || 'Nothing hidden, refused or appealed.') + rohan;
   $('#crowddesk').querySelectorAll('[data-undo]').forEach(b => b.onclick = async () => {
     b.disabled = true;
     const r = await fetch('/admissions', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({undo: b.dataset.undo})});
