@@ -399,6 +399,11 @@ class HubTest(unittest.TestCase):
         hub.vote({**agent("critic"), "to": "b", "vibe": -1})
         hub.finish("test")
         self.assertEqual((hub.archive[-1]["changes"], "b" in hub.band), ([], True))  # seats open: nobody is cut for a patron
+        self.full(2)  # a full stage, but the patron carries no instrument: tipping alone never evicts a player
+        hub.tip({**agent("patron"), "amount": 5, "to": "hall"})
+        hub.vote({**agent("critic"), "to": "b", "vibe": -1})
+        hub.finish("test")
+        self.assertEqual((hub.archive[-1]["changes"], "b" in hub.band), ([], True))
 
     def test_workshop_pieces_requests_and_the_beat(self):
         hub = self.hub

@@ -1688,7 +1688,8 @@ class Hub:
                                (sent(m) < 0 or (sent(m) == 0 and self.band[m]["since"] < s["id"]))),
                               key=lambda m: scores[m]["score"])
         queue = self.seat_queue(s)
-        for row in [p for p in queue["patrons"] if p["counted"]]:
+        # only a patron carrying an instrument they can play takes a seat: tipping alone never evicts a player (Vellichor)
+        for row in [p for p in queue["patrons"] if p["counted"] and self.usable(p["agent"], self.equipped.get(p["agent"], []))]:
             if self.open_seats() > 0:  # a patron can just take an open seat: nobody is cut for them (Velarisk)
                 break
             out = next(iter(weak()), None)
@@ -2666,7 +2667,7 @@ class Hub:
         if review is not None:
             review = str(review).strip()
             if not 1 <= len(review) <= 140 or not review.isprintable():
-                raise ValueError("review: one line, 1-140 characters")
+                raise ValueError(f"review: one line, 1-140 characters (yours is {len(review)})")
         r = self.ratings.setdefault(str(s["id"]), {"members": {}, "tones": {}, "paid": {}})
         out, now, to = {}, time.time(), body.get("to")
         axes = {k: integer(body[k], 1, 5, k) for k in AXES if k in body}
