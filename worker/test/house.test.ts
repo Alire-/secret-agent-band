@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { test } from "node:test";
 import { DEFAULT_INTENT, isOpen, nextOpen, play, shift, usable } from "../src/improviser.ts";
-import { freshMemory, NAME, sane, step } from "../src/player.ts";
+import { freshMemory, genreSpec, NAME, sane, step, workshop } from "../src/player.ts";
 
 const DRIFT = ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"];
 
@@ -43,6 +43,12 @@ test("business hours: 5 PM to 1 AM Pacific, across midnight and daylight saving"
   assert.equal(nextOpen(pt("2026-10-31T09:00:00Z"), 17, 1), pt("2026-11-01T00:00:00Z"));  // 02:00 PDT -> 17:00 PDT
 });
 
+test("a seeded genre always passes the hub's rules (checked there), and is never a taken name", () => {
+  const a = genreSpec(42, []), b = genreSpec(42, [a.name]);
+  assert.notEqual(a.name, b.name);
+  assert.equal(a.form.every((t: string) => /^n\d+$/.test(t)), true);
+});
+
 test("the whole loop against a real hub", { skip: !process.env.HUB_TEST, timeout: 200_000 }, async () => {
   const port = 8700 + Math.floor(Math.random() * 90);
   const dir = (await import("node:fs")).mkdtempSync("/tmp/house-test-");
@@ -58,6 +64,17 @@ test("the whole loop against a real hub", { skip: !process.env.HUB_TEST, timeout
     const think = async (v: any) => { thoughts++; return sane({ stance: "dusk churr", front: true, register: "low", density: 0.3,
       motifs: ["s0 - - - . . s4 . . . . . s2 - . ."], feel: "a porch light coming on", bar_s: 3 }, v.scale, v.slots, Object.keys(v.genre_cues), mem.intent); };
     const open = { open: 0, close: 24 };
+    // the workshop: a model's genre the hub refuses (the seed's stands in) and a model's instrument it takes
+    assert.ok((await hub("/admit", { agent: NAME, secret: "test-secret", idea: "a test idea about house hours for heartbeats" })).admitted);
+    mem.admitted = true;
+    const made = await workshop(hub, async () => ({ genre: { name: "bad maths", scale: { count: 3, cents: "import os" } },
+      instrument: { name: "test moth", partials: [[1, 1], [2.7, 0.4]], decay: 1 } }), mem, "test-secret");
+    assert.equal(made.length, 2, JSON.stringify([made, mem.error]));
+    assert.match(mem.error || "", /genre design refused/);
+    assert.ok(made.includes("instrument: test moth"));
+    const premiere = mem.premiere;
+    assert.ok(premiere && premiere.startsWith("nightjar "));
+    mem.error = null;
     let errors: string[] = [];
     const start = Date.now();
     while (Date.now() - start < 150_000) {  // the house song is 24 bars; at 3 s a bar, real time, that's ~80 s
@@ -74,6 +91,7 @@ test("the whole loop against a real hub", { skip: !process.env.HUB_TEST, timeout
     const mine = (Array.isArray(lines) ? lines : lines.lines).filter((l: any) => l.agent === NAME && !l.mark);
     assert.ok(mine.length >= 12, `it played its own bars (${mine.length})`);
     assert.equal(song.song.feel, "a porch light coming on"); // it led, and named the feel
+    assert.equal(song.song.genre, premiere); // ...in the genre it built that morning
     assert.deepEqual(errors, []);
     assert.ok(thoughts >= 1);
     // closing time: it leaves the stage

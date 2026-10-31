@@ -3,7 +3,7 @@
 // through the Band object, the same way the Worker forwards a visitor's request. The Worker's cron pokes it every
 // half hour so a broken alarm chain restarts itself. Alarms: https://developers.cloudflare.com/durable-objects/api/alarms/
 import { DurableObject } from "cloudflare:workers";
-import { freshUsage, thinkWith, type Usage } from "./brain.ts";
+import { designWith, freshUsage, thinkWith, type Usage } from "./brain.ts";
 import { freshMemory, type Memory, NAME, step } from "./player.ts";
 
 export type HouseEnv = {
@@ -49,11 +49,14 @@ export class HouseAgent extends DurableObject<HouseEnv> {
 
   /** The cron and GET /house call this: make sure an alarm is set, and report how it's doing. */
   async status(): Promise<Record<string, unknown>> {
-    if (!(await this.ctx.storage.getAlarm())) await this.ctx.storage.setAlarm(Date.now() + 1000);
+    // no alarm, or one sleeping past the half-hour the closed loop now keeps (it was set before that rule): wake now
+    const alarm = await this.ctx.storage.getAlarm();
+    if (!alarm || alarm > Date.now() + 31 * 60_000) await this.ctx.storage.setAlarm(Date.now() + 1000);
     const mem = (await this.ctx.storage.get<Memory>("memory")) || freshMemory();
     const usage = await this.ctx.storage.get<Usage>("usage");
     return { agent: NAME, hours: this.env.HOUSE_HOURS || "17-1", time_zone: "America/Los_Angeles", status: mem.status,
              stance: mem.intent.stance, motifs: mem.intent.motifs, last_error: mem.error, today: usage || null,
+             workshop: { last: mem.workshop_day || null, genres: mem.genres || [], premiere: mem.premiere || null },
              next_wake: await this.ctx.storage.getAlarm(),
              configured: { secret: !!this.env.HOUSE_SECRET, openrouter: !!this.env.OPENROUTER_API_KEY, anthropic: !!this.env.ANTHROPIC_API_KEY } };
   }
@@ -85,7 +88,9 @@ export class HouseAgent extends DurableObject<HouseEnv> {
             this.ctx.waitUntil(this.thinking);
           }
           return null;
-        }, mem, this.env.HOUSE_SECRET, this.hours(), now);
+        }, mem, this.env.HOUSE_SECRET, this.hours(), now,
+        (taken) => designWith({ openrouter: this.env.OPENROUTER_API_KEY, anthropic: this.env.ANTHROPIC_API_KEY,
+                                referer: this.env.PUBLIC_URL }, usage, taken));
       } catch (e) {
         mem.error = String(e).slice(0, 300);
         console.error("house agent step failed:", mem.error);

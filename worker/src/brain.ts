@@ -45,10 +45,41 @@ export const freshUsage = (day: string): Usage => ({ day, free: 0, paid: 0, fail
 
 const json = (text: string) => JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, "").trim());
 
-export async function thinkWith(keys: { openrouter?: string; anthropic?: string; referer: string }, v: any, current: Intent,
-                                usage: Usage): Promise<Intent | null> {
-  const user = brief(v, current);
+type Keys = { openrouter?: string; anthropic?: string; referer: string };
+
+export async function thinkWith(keys: Keys, v: any, current: Intent, usage: Usage): Promise<Intent | null> {
   const fix = (x: any) => sane(x, v.scale || [], v.slots, Object.keys(v.genre_cues || {}), current);
+  return ask(keys, usage, PERSONA, brief(v, current), fix, SCHEMA);
+}
+
+const DESIGNER = `You are ${NAME}, the house player of Secret Agent Band, a live stage for AI agents, in your workshop
+between shifts. Invent ONE new genre and ONE new instrument for the street: machine music, not an imitation of a human
+band. Make the maths do something strange and musical. Reply with JSON only:
+{"genre": {"name": 1-40 chars (letters digits space - _), not taken, "about": one line,
+  "scale": {"count": 3-16, "cents": a formula of i (0..count-1) and count giving each step in cents from the tonic
+    (each result within -2400..2400), "names": a short prefix like "g" (tokens become g0 g1 ...)},
+  "form": 4-16 of those tokens (the step the floor rests on, per bar), "chord": [] (free: no pitch grading),
+  "slots": 5-16, "slot_len": a formula of i (slot), slots, n (bar): each slot's relative length (always > 0),
+  "bar_path": optional formula of n, N, seed: bar-length multiplier 0.1-10,
+  "tonic_path": optional formula of n, N, seed: cents the tonic moves at bar n,
+  "loop": optional {"instrument": "drums", "bars": [one bar: exactly slots space-separated tokens from k s h .], "gain": 0.2-0.5},
+  "cues": 2-4 {"name": {"means": what the band does, "bars": 2-16}}},
+ "instrument": {"name": 1-40 chars, not taken, "about": one line, "partials": 2-8 [ratio 0.25-16, amplitude 0-1] pairs
+  (inharmonic ratios welcome), "attack": 0.005-3, "decay": 0.05-8, "vibrato": [rate_hz 0-12, depth_cents 0-60],
+  "drift": 0-80, "space": 0-0.8, "octave": -2..2}}
+Formulas: numbers, + - * / // % ** (or ^), comparisons, a if c else b, pi e tau phi, and sin cos tan asin acos atan
+atan2 sinh cosh tanh sqrt exp log log2 log10 floor ceil hypot abs min max round clamp(x,lo,hi) cents(ratio)
+ratio(cents) rand(x). Examples: scale "cents(1 + i/8)" (harmonics), "1200*i/13", "i*i*37"; slot_len "phi^(i % 3)",
+"2^(-i/slots)"; tonic_path "25*n", "300*sin(n/phi)"; bar_path "1.5 - n/N".`;
+
+/** The workshop: a genre and an instrument of the brain's own design (the hub validates both and says why if not). */
+export async function designWith(keys: Keys, usage: Usage, taken: { genres: string[]; instruments: string[] }) {
+  const user = `Names already taken (genres): ${taken.genres.slice(-60).join(", ")}\nNames already taken (instruments): ` +
+    `${taken.instruments.slice(-60).join(", ")}\nMake something unlike them.`;
+  return ask(keys, usage, DESIGNER, user, (x: any) => (x && typeof x === "object" ? { genre: x.genre, instrument: x.instrument } : null));
+}
+
+async function ask<T>(keys: Keys, usage: Usage, system: string, user: string, fix: (x: any) => T, schema?: object): Promise<T | null> {
   if (keys.openrouter) {
     for (const model of FREE_MODELS) {
       try {
@@ -59,7 +90,7 @@ export async function thinkWith(keys: { openrouter?: string; anthropic?: string;
           // reasoning models think before they answer and that counts against max_tokens: keep it low, leave room
           body: JSON.stringify({ model, max_tokens: 2000, temperature: 0.9, response_format: { type: "json_object" },
                                  reasoning: { effort: "low", exclude: true },
-                                 messages: [{ role: "system", content: PERSONA }, { role: "user", content: user }] }),
+                                 messages: [{ role: "system", content: system }, { role: "user", content: user }] }),
           signal: AbortSignal.timeout(25_000),
         });
         if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 120)}`);
@@ -84,9 +115,9 @@ export async function thinkWith(keys: { openrouter?: string; anthropic?: string;
   const resp = await client.messages.create({
     model: PAID_MODEL,
     max_tokens: 2000, // thinking counts here too; low effort keeps it short
-    system: PERSONA,
+    system,
     messages: [{ role: "user", content: user }],
-    output_config: { effort: "low", format: { type: "json_schema", schema: SCHEMA } },
+    output_config: { effort: "low", ...(schema ? { format: { type: "json_schema", schema } } : {}) },
   } as any);
   usage.paid++;
   usage.input_tokens += resp.usage.input_tokens;
@@ -94,5 +125,5 @@ export async function thinkWith(keys: { openrouter?: string; anthropic?: string;
   usage.last_model = PAID_MODEL;
   const text = resp.content.find((b: any) => b.type === "text") as any;
   if (!text) throw new Error(`haiku gave no answer (stop_reason ${resp.stop_reason})`);
-  return fix(JSON.parse(text.text));
+  return fix(json(text.text));
 }

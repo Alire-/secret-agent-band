@@ -101,7 +101,6 @@
   th { color: var(--vec); font: 700 10px var(--arcade); letter-spacing: .12em; }
   td, th { border-bottom: 1px solid rgba(57,255,20,.15); }
   input[type=range] { accent-color: var(--vec); }
-  #tunein { font: 700 10px var(--arcade); letter-spacing: .14em; color: var(--vec); }
 </style>
 </head>
 <body>
@@ -124,7 +123,7 @@
     <canvas id="zones" role="img" aria-label="Zonation strip: which pitch layers are submerged or exposed, bar by bar" style="height:72px;margin-top:18px;cursor:default"></canvas>
     <div class="meta">
       <button class="btn" id="listen" hidden>◀ Back to live</button>
-      <span id="tunein">♪ tap anywhere to tune in (browsers need one touch before sound)</span>
+      <button class="btn" id="mute" aria-pressed="true">🔇 Sound off · turn on</button>
       <label class="meta" style="margin:0">vol <input type="range" id="volume" min="0" max="1" step="0.01" value="0.8" style="width:90px;vertical-align:middle"></label>
       <span id="hearing"></span>
     </div>
@@ -242,7 +241,7 @@ function drawZones(s) {
 let actx = null, player = null, master = null, bus = null, analyser = null, spectrum = null;
 function ensureCtx() {
   if (!actx) {
-    actx = new AudioContext(); master = actx.createGain(); master.connect(actx.destination); master.gain.value = +$('#volume').value;
+    actx = new AudioContext(); master = actx.createGain(); master.connect(actx.destination); master.gain.value = muted ? 0 : +$('#volume').value;
     // the EQ listens before the volume knob: it always shows the band as if turned up loud
     bus = actx.createGain(); bus.connect(master);
     analyser = actx.createAnalyser(); analyser.fftSize = 1024; analyser.smoothingTimeConstant = .8;
@@ -251,29 +250,40 @@ function ensureCtx() {
   }
   actx.resume();
 }
-$('#volume').oninput = () => { if (master) master.gain.value = +$('#volume').value; try { localStorage.volume = $('#volume').value; } catch (e) {} };
+// Every visit starts muted: sound plays only once someone turns it on (the mute button, the volume knob, a play button)
+let muted = true;
+function setMuted(on) {
+  muted = on;
+  if (!on && !player) goLive();
+  if (master) master.gain.value = on ? 0 : +$('#volume').value;
+  $('#mute').textContent = on ? '🔇 Sound off · turn on' : '🔊 Sound on · mute';
+  $('#mute').setAttribute('aria-pressed', String(on));
+}
+$('#mute').onclick = () => setMuted(!muted);
+$('#volume').oninput = () => {
+  if (muted) setMuted(false); else if (master) master.gain.value = +$('#volume').value;
+  try { localStorage.volume = $('#volume').value; } catch (e) {}
+};
 try { if (localStorage.volume) $('#volume').value = localStorage.volume; } catch (e) {}
 function stopPlayer() { if (player) player.sources.forEach(s => { try { s.stop(); } catch (e) {} }); player = null; $('#hearing').textContent = ''; }
 
-// The band is always on: the page follows it live and the volume knob is the only control. Browsers allow sound
-// only after a first touch, so the first tap or key anywhere tunes in; an archived song plays, then live resumes.
+// The band is always on: once the sound is on, the page follows it live; an archived song plays, then live resumes.
+// Muting after that keeps following, at zero gain, so the EQ stays real and unmuting is instant.
 function goLive() {
   stopPlayer(); ensureCtx();
   player = {live: true, sid: state ? state.id : null, data: null, playhead: state ? Math.max(0, state.settled - 3) : 0, limit: null,
             nextTime: actx.currentTime + .2, segments: [], sources: [], fetching: false, only: null};
-  $('#listen').hidden = true; $('#tunein').hidden = true;
+  $('#listen').hidden = true;
 }
-const tuneIn = () => { if (!player) goLive(); };
-for (const ev of ['pointerdown', 'keydown', 'touchstart']) addEventListener(ev, tuneIn, {once: false, passive: true});
 $('#listen').onclick = goLive;
 
 async function playArchive(id, only) {
-  stopPlayer(); ensureCtx();
+  stopPlayer(); muted = false; ensureCtx(); setMuted(false);
   const data = await (await fetch(`/archive/${id}`)).json();
   player = {live: false, sid: id, data, playhead: 0, limit: data.bar,
             nextTime: actx.currentTime + .2, segments: [], sources: [], fetching: false, only};
   showTab('live'); history.replaceState(null, '', '#live');
-  $('#listen').hidden = false; $('#tunein').hidden = true;
+  $('#listen').hidden = false;
 }
 
 async function pump() {
@@ -874,7 +884,7 @@ function equalizer(now, view) {
   }
   g.globalAlpha = 1;
   energy += ((live ? sum / BINS : 0) - energy) * .1;
-  if (!live) { g.fillStyle = C.text; g.font = FONT(10); g.textAlign = 'left'; g.fillText('♪ TAP ANYWHERE TO TUNE IN · NOW SHOWING THE ROOM', 12, floor - maxH * .62 - 8); }
+  if (!live) { g.fillStyle = C.text; g.font = FONT(10); g.textAlign = 'left'; g.fillText('🔇 SOUND IS OFF · TURN IT ON BELOW · NOW SHOWING THE ROOM', 12, floor - maxH * .62 - 8); }
 }
 
 // the broadcast glitch: slices of the screen jump sideways with a colour split, on big moments and now and then

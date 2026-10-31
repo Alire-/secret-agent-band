@@ -37,8 +37,39 @@ export function mintSpec(seed: number, taken: string[]): Record<string, unknown>
            drift: Math.round(r() * 40), space: Math.round(r() * 0.7 * 100) / 100, octave: Math.floor(r() * 3) - 1 };
 }
 
+// once a day, in the workshop: a genre of its own (maths and all) and an instrument to play it with
+const GENRE_MAX = 30;
+const TEMPLATES = {
+  scale: ["1200*i/(count + K % 4)", "cents(1 + i/K)", "cents(phi^i) % 1200", "i*i*K", "K*i + 40*sin(i*phi)", "cents((K + i)/K)"],
+  slot_len: ["1 + .5*(i % 2)", "phi^(i % 3)", "2^(-i/slots)", "1 + (i % (2 + n % 3) == 0)", "1 + rand(i + n)"],
+  bar_path: ["1.5 - n/N", "1 + .4*sin(n*phi)", "2^(n/N) * .8", "1 + .3*(n % 4 == 3)"],
+  tonic_path: ["25*n", "1200*log2(1 + n/8)", "300*sin(n/phi)", "K*(n % 4)", "-15*n"],
+};
+const KINDS = ["glass", "orbit", "tide", "lattice", "pendulum", "moth", "relay", "spiral", "hinge", "ember"];
+
+/** A genre from a seed, when no model is free to design one: a scale by rule, uneven slots, a tonic path, sometimes a loop. */
+export function genreSpec(seed: number, taken: string[]): Record<string, any> {
+  const r = rng(seed), pick = <T>(xs: T[]) => xs[Math.floor(r() * xs.length)];
+  const count = 5 + Math.floor(r() * 8), K = 5 + Math.floor(r() * 13), slots = pick([7, 9, 10, 12, 13, 16]);
+  let name = "";
+  for (let k = 0; !name || taken.includes(name); k++) name = `nightjar ${pick(KINDS)} ${pick(WORDS)}${k ? " " + k : ""}`;
+  const toks = Array.from({ length: count }, (_, i) => `n${i}`);
+  return {
+    name, about: "built by the house player in the small hours, from a rule and a hunch",
+    scale: { count, cents: pick(TEMPLATES.scale).replace(/K/g, String(K)), names: "n" },
+    form: Array.from({ length: 4 + Math.floor(r() * 5) }, () => pick(toks)), chord: [], slots,
+    slot_len: pick(TEMPLATES.slot_len), tonic_path: pick(TEMPLATES.tonic_path).replace(/K/g, String(K * 20)),
+    ...(r() < 0.5 ? { bar_path: pick(TEMPLATES.bar_path) } : {}),
+    ...(r() < 0.6 ? { loop: { instrument: "drums", gain: 0.35, bars: [Array.from({ length: slots }, (_, i) => i === 0 ? "k" : r() < 0.25 ? pick(["h", "s", "k"]) : ".").join(" ")] } } : {}),
+    cues: { thin: { means: "fewer notes, longer", bars: 8, effect: "softer" }, bloom: { means: "pile it on", bars: 8, effect: "louder" },
+            settle: { means: "land on the first step and end", bars: 8, effect: "end" } },
+  };
+}
+
 export type Hub = (path: string, body?: unknown) => Promise<any>;
 export type Think = (view: any, intent: Intent, memory: Memory) => Promise<Intent | null>;
+/** The brain's workshop: a genre and an instrument of its own design, or null to fall back on the seed. */
+export type Design = (taken: { genres: string[]; instruments: string[] }) => Promise<{ genre?: any; instrument?: any } | null>;
 export type Memory = {
   admitted: boolean;
   built: boolean;
@@ -53,6 +84,9 @@ export type Memory = {
   cued: number[]; // songs it already cued
   answered: string[]; // bar refs it already answered
   seed: number;
+  workshop_day?: string; // the Pacific day it last built in the workshop
+  genres?: string[]; // genres it built
+  premiere?: string | null; // its newest genre, to lead next
   status: string;
   error: string | null;
 };
@@ -64,8 +98,36 @@ export const freshMemory = (): Memory => ({
 
 export type Hours = { open: number; close: number };
 
+const pacificDay = (now: number) => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles" }).format(now);
+
+/** Once a Pacific day, off stage: design a genre and an instrument and put them on the street. */
+export async function workshop(hub: Hub, design: Design | undefined, mem: Memory, secret: string, now = Date.now()): Promise<string[]> {
+  const me = { agent: NAME, secret }, made: string[] = [];
+  mem.workshop_day = pacificDay(now);
+  if ((mem.genres || []).length >= GENRE_MAX) return made;
+  const taken = { genres: ((await hub("/genres")) as any[]).map((g) => g.name), instruments: ((await hub("/instruments")) as any[]).map((i) => i.name) };
+  const idea = design ? await design(taken).catch((e) => { mem.error = `design: ${String(e).slice(0, 200)}`; return null; }) : null;
+  mem.seed = (mem.seed * 1103515245 + 12345) >>> 0;
+  for (const [kind, path, spec, fallback] of [
+    ["genre", "/genre", idea?.genre, () => genreSpec(mem.seed, taken.genres)],
+    ["instrument", "/instrument", idea?.instrument, () => mintSpec(mem.seed, taken.instruments)],
+  ] as const) {
+    let r = spec && typeof spec === "object" ? await hub(path, { ...spec, copies: 2, ...me }) : { error: "no design" };
+    if (r.error) {  // the hub said why; the seed's version always validates
+      if (spec) mem.error = `${kind} design refused: ${String(r.error).slice(0, 160)}`;
+      r = await hub(path, { ...fallback(), ...me });
+    }
+    if (r.error) { mem.error = `${kind} refused: ${String(r.error).slice(0, 160)}`; continue; }
+    made.push(`${kind}: ${r.name}`);
+    if (kind === "genre") { mem.genres = [...(mem.genres || []), r.name]; mem.premiere = r.name; }
+    else mem.minted = [...mem.minted, r.name];
+  }
+  return made;
+}
+
 /** One step. Returns how many ms to sleep before the next. */
-export async function step(hub: Hub, think: Think, mem: Memory, secret: string, hours: Hours, now = Date.now()): Promise<number> {
+export async function step(hub: Hub, think: Think, mem: Memory, secret: string, hours: Hours, now = Date.now(),
+                           design?: Design): Promise<number> {
   const me = { agent: NAME, secret };
   if (!isOpen(now, hours.open, hours.close)) {
     if (mem.status !== "closed") {
@@ -73,7 +135,9 @@ export async function step(hub: Hub, think: Think, mem: Memory, secret: string, 
       if (v.you?.member) await hub("/session/leave", me);
       mem.status = "closed";
     }
-    return Math.max(60_000, nextOpen(now, hours.open, hours.close) - now);
+    if (mem.admitted && mem.workshop_day !== pacificDay(now)) await workshop(hub, design, mem, secret, now);
+    // wake at least every half hour while closed, so the workshop runs the same day it is due
+    return Math.max(60_000, Math.min(30 * 60_000, nextOpen(now, hours.open, hours.close) - now));
   }
   if (!mem.admitted) {
     const r = await hub("/admit", { ...me, idea: IDEA });
@@ -140,7 +204,10 @@ export async function step(hub: Hub, think: Think, mem: Memory, secret: string, 
     // the hub already moves most new songs to a new genre; only when it kept the last one does it roll again
     const same = v.song?.genre === mem.genre;
     const genres = ((await hub("/genres")) as any[]).map((g) => g.name).filter((g) => g !== v.song?.genre);
-    const genre = same && genres.length && r() < GENRE_CHANGE ? genres[Math.floor(r() * genres.length)] : undefined;
+    // its newest genre gets the first song it leads; after that the dice as usual
+    const genre = mem.premiere && genres.includes(mem.premiere) ? mem.premiere
+      : same && genres.length && r() < GENRE_CHANGE ? genres[Math.floor(r() * genres.length)] : undefined;
+    mem.premiere = null;
     await hub("/session/song", { ...me, bars: SONG_BARS, tonic: TONICS[Math.floor(r() * TONICS.length)],
                                  ...(genre ? { genre } : {}), ...(intent.feel ? { feel: intent.feel } : {}),
                                  ...(intent.bar_s ? { bar_s: intent.bar_s } : {}) });
