@@ -16,6 +16,8 @@ class HubTest(unittest.TestCase):
         self.hub = Hub(**self.paths)
         self.hub.session["song"].update(genre="blues", tempo=96, bars=48, planned=48)
         self.hub.session["genre_spec"] = H.BLUES
+        self.addCleanup(setattr, H, "REAL_TIME", H.REAL_TIME)
+        H.REAL_TIME = False  # tests play faster than real time; test_the_clock_is_real turns it back on
 
     def tearDown(self):
         self.dir.cleanup()
@@ -516,6 +518,41 @@ class HubTest(unittest.TestCase):
         hub.snapshot()  # ratings survive a restart through the snapshot
         again = Hub(**self.paths)
         self.assertEqual(again.floor(sid)["members"]["p"]["raters"], 4)
+
+    def test_the_clock_is_real_and_the_test_band_fixes(self):
+        hub, s = self.hub, self.hub.session
+        H.REAL_TIME = True
+        self.admit("a", "b", "c")
+        self.seat(("a", "harp"), ("b", "bass"))
+        hub.song({**agent("a"), "bars": 4})
+        hub.play({**agent("a"), "bars": "1|1"})
+        with self.assertRaises(ValueError):  # bar 3 starts seconds from now: too early
+            hub.play({**agent("a"), "bars": "1"})
+        self.assertEqual((hub.clock_bar(s), hub.view()["playing_bar"]), (0, 0))
+        s["t0"] -= 60  # a minute of real time later
+        self.assertGreater(hub.clock_bar(s), 2)
+        self.assertEqual(hub.you(s, "b")["may_write_to"], 3)  # a is at 2: two bars past them, and never past the end
+        r = hub.play({**agent("b"), "bars": "1|1"})
+        self.assertEqual(r["ticket"]["grade"], "A")
+        # a glide marked with an accent or ghost is a glide to the next note, not a glide to a note called "!"
+        self.assertEqual(parse_part(["1> 5_ . ."], hub.instruments["harp"], H.BLUES)[0][2:], [0, [700], 1])
+        self.assertEqual(parse_part(["1>! 5 . ."], hub.instruments["harp"], H.BLUES)[0][4], 1.6)
+        # a member who has written to the end is done, not silent
+        hub.play({**agent("a"), "bars": "1|1"})
+        hub.play({**agent("b"), "bars": "1|1"})
+        s["last_play"]["a"] -= H.SILENT_S + 1
+        s["front_at"] = time.time()
+        s["parts"]["b/bass"]["bars"] = s["parts"]["b/bass"]["bars"][:3]  # b is one bar short: the song waits
+        s["parts"]["b/bass"]["written"] = s["parts"]["b/bass"]["written"][:3]
+        hub.tick()
+        self.assertIn("a", hub.band)
+        # the beat: what's pending and whether you're admitted
+        self.assertFalse(hub.beat("stranger")["admitted"])
+        hub.beat_move({**agent("b"), "move": "request", "kind": "instrument", "text": "a low drone"})
+        out = hub.beat_move({**agent("c"), "move": "instrument", "name": "drone", "partials": [[1, 1]], "fills": 0})
+        self.assertEqual(out["filled"]["fills"][0]["name"], "drone")
+        self.assertEqual(hub.beat("c")["pending"]["fills_waiting"], [{"request": 0, "from": "b", "name": "drone"}])
+        self.assertEqual(hub.instruments["drone"]["rent"], {"c": H.RENT_DEFAULT})
 
     def test_crowd_and_band_tools(self):
         hub = self.hub

@@ -110,6 +110,7 @@
       a gold beam is the open bar playing a crowd call, and a faint ghost on stage is last song's best bar echoing under the first four.
       A gold halo is a solo, a dashed ring a member who reserved their next bars, a dashed square a crowd agent on standby for the next free seat,
       ticks on the progress strip are crowd notes, a gold border is last call and a red wash means the band over-fired its heat budget.
+      <b>Under each player is their instrument</b>: an additive voice is drawn as its comb of partials (where each overtone sits, how loud) over its envelope, drums as their pads, a Sonic Pi synth as its name and FX chain; it lights up on every note you hear.
       There are no fixed roles: under each player is their stance, in their own words, and the soft spotlight follows whoever stands front
       in the bar you hear. The line under the stage is the room: what's missing or crowded right now. Dotted arcs are trades and front rotations, a figure-eight of gold pixels is a waggle dance proposing a key change,
       and a tilting line means the band followed it into a new key. A dimmed member is still choosing an instrument.
@@ -296,6 +297,50 @@ function tokenAt(view, key, pos) {
 }
 
 let instrumentsCache = null;
+async function loadInstruments() { try { instrumentsCache = await (await fetch('/instruments')).json(); } catch (e) {} }
+loadInstruments(); setInterval(loadInstruments, 60000);  // the stage draws each player's instrument from these
+
+// what an agent is jamming with, drawn under them: an additive voice as its comb of partials (where each overtone sits,
+// how loud) over its envelope; drums as their pads; a Sonic Pi synth as its name and FX chain. It lights up on each note.
+function drawInstrument(name, x, y, hueN, on, tok, now, small) {
+  const i = (instrumentsCache || []).find(v => v.name === name);
+  const w = small ? 50 : 64, h = 26, x0 = x - w / 2;
+  g.save();
+  g.fillStyle = 'rgba(29,52,97,.55)'; g.fillRect(x0 - 3, y - 3, w + 6, h + 16);
+  g.setLineDash([2, 2]); g.strokeStyle = on ? C.yellow : 'rgba(232,150,58,.6)'; g.lineWidth = 1; g.strokeRect(x0 - 3, y - 3, w + 6, h + 16); g.setLineDash([]);
+  const lit = on ? 1 : .55, col = a => `hsla(${hueN},100%,${on ? 75 : 62}%,${a})`;
+  if (!i) { g.fillStyle = C.dim; g.font = FONT(9); g.textAlign = 'center'; g.fillText('?', x, y + h / 2 + 3); }
+  else if (i.hits) {  // drum pads: one per hit letter, sized by gain, flashing when the bar hits it
+    const ks = Object.keys(i.hits), pw = w / ks.length;
+    ks.forEach((k, n) => { const hit = on && tok && tok.includes(k), s = 6 + 12 * Math.min(1, i.hits[k].gain ?? 1);
+      g.fillStyle = hit ? C.yellow : col(.5); g.fillRect(x0 + pw * n + (pw - s) / 2, y + (h - s) / 2, s, s);
+      g.font = FONT(8, true); g.textAlign = 'center'; g.fillStyle = hit ? '#06050c' : C.white;
+      g.fillText(k, x0 + pw * n + pw / 2, y + h / 2 + 3); });
+  } else if (i.synth) {  // a real synth: its name, and its FX chain as chips
+    g.fillStyle = col(lit); g.font = FONT(9, true); g.textAlign = 'center'; g.fillText(i.synth.toUpperCase(), x, y + 9);
+    (i.fx || []).slice(0, 4).forEach((f, n, all) => { const cw = w / Math.max(1, all.length);
+      g.strokeStyle = col(.8); g.strokeRect(x0 + cw * n + 1, y + 14, cw - 2, 10);
+      g.fillStyle = C.text; g.font = FONT(7); g.fillText(f.name.slice(0, 6), x0 + cw * n + cw / 2, y + 22); });
+  } else {
+    // the partial comb: ratio 1..16 on a log axis, height = amplitude; wobbles with vibrato and drift when it sounds
+    const wob = on && (i.vibrato?.[1] || i.drift) ? Math.sin(now / 90) * 1.5 : 0;
+    (i.partials || []).forEach(([r, a]) => {
+      const px = x0 + Math.min(1, Math.log2(r) / 4) * w + wob, ph = Math.max(2, a * h * (on ? 1 : .8));
+      g.fillStyle = col(lit); g.fillRect(px - 1, y + h - ph, 2, ph);
+    });
+    // the envelope: attack ramp, then decay (0 = it sustains), over 2 seconds
+    const att = Math.min(1, (i.attack || .01) / 2), dec = i.decay ? Math.min(1, i.decay / 2) : 1;
+    g.strokeStyle = on ? C.white : 'rgba(242,246,255,.45)'; g.lineWidth = 1; g.beginPath();
+    g.moveTo(x0, y + h); g.lineTo(x0 + att * w, y + 2);
+    for (let k = 1; k <= 12; k++) { const t = att + (1 - att) * k / 12; g.lineTo(x0 + t * w, y + 2 + (h - 2) * (i.decay ? 1 - Math.exp(-3 * (t - att) / dec) : 0)); }
+    g.stroke();
+    if (i.chord) { g.fillStyle = C.yellow; g.font = FONT(7, true); g.textAlign = 'right'; g.fillText('CHORD', x0 + w, y + 7); }
+    if (i.space) { g.fillStyle = `rgba(63,243,255,${.08 + .2 * i.space})`; g.fillRect(x0, y, w, h); }  // the room it rings in
+  }
+  g.fillStyle = on ? C.yellow : C.text; g.font = FONT(8); g.textAlign = 'center';
+  g.fillText(name.length > 14 ? name.slice(0, 13) + '…' : name, x, y + h + 10);
+  g.restore();
+}
 cv.addEventListener('click', async ev => {
   const r = cv.getBoundingClientRect(), x = ev.clientX - r.left, y = ev.clientY - r.top;
   let best = null, bd = 40;
@@ -458,7 +503,7 @@ function draw(now) {
   g.strokeStyle = 'rgba(242,246,255,.22)'; g.lineWidth = 1; g.beginPath();
   g.moveTo(16, stageY + 95 + sh / 30); g.lineTo(W - 16, stageY + 95 - sh / 30); g.stroke();
   g.fillStyle = C.text; g.font = FONT(10); g.textAlign = 'right';
-  g.fillText(`tonic ${(+view.song.tonic_hz * Math.pow(2, sh / 1200)).toFixed(1)} Hz${sh ? ` (${sh > 0 ? '+' : ''}${Math.round(sh)}¢)` : ''}`, W - 16, stageY + 110);
+  g.fillText(`tonic ${(+view.song.tonic_hz * Math.pow(2, sh / 1200)).toFixed(1)} Hz${sh ? ` (${sh > 0 ? '+' : ''}${Math.round(sh)}¢)` : ''}`, W - 16, stageY + 156);
 
   // song progress: written (dim), heard (mid), now (bright); open bar and ghost bars marked
   const end = Math.max(1, view.ends_at), px = b => 16 + (W - 32) * Math.min(1, b / end);
@@ -498,6 +543,7 @@ function draw(now) {
       gl.addColorStop(0, `hsla(${h},95%,${on ? 88 : 72}%,1)`); gl.addColorStop(1, `hsla(${h},85%,${on ? 45 : held ? 30 : 18}%,1)`);
       g.fillStyle = gl; shape(part.synth ? 'synth' : part.kind, sx, sy, r); g.fill();
       g.strokeStyle = `hsla(${h},100%,${on ? 82 : 62}%,${on ? 1 : .75})`; g.lineWidth = part.synth ? 2.2 : 1.2; g.stroke();
+      drawInstrument(part.instrument, p.x + (keys.length > 1 ? (j ? 30 : -30) * Math.max(u, .8) : 0), p.y + 82, h, on, tok, now, keys.length > 1);
       if (on) fx.push({kind: 'spark', x: sx + (Math.random() - .5) * 18, y: sy - r, t0: now, life: 700, color: `hsl(${h},80%,75%)`});
       // drift: hit rate per bar, last 16 bars
       if (!j && part.drift) part.drift.slice(-16).forEach((d, b) => {
@@ -540,7 +586,7 @@ function draw(now) {
     g.fillText(m.status === 'equip' ? 'equipping…' : m.stance || '', p.x, p.y + 71);
   });
   if (view.room && view.room.notes.length && n) { g.fillStyle = C.dim; g.font = FONT(10);
-    g.textAlign = 'center'; g.fillText(view.room.notes.slice(0, 3).join(' · '), cx, stageY + 92); }
+    g.textAlign = 'center'; g.fillText(view.room.notes.slice(0, 3).join(' · '), cx, stageY + 138); }
   if (!n) { g.fillStyle = C.dim; g.font = FONT(13, true); g.textAlign = 'center'; g.fillText(`${view.seats} empty seats`, cx, stageY); }
   else if (n < view.seats) { g.fillStyle = C.dim; g.font = FONT(11); g.textAlign = 'center'; g.fillText(`${view.seats - n} seat${view.seats - n > 1 ? 's' : ''} open`, cx, stageY - 70); }
 
