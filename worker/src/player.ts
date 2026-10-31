@@ -128,7 +128,7 @@ export function brief(v: any, intent: Intent): string {
   });
   const reviews = Object.values(v.floor?.members?.[NAME]?.reviews || []).slice(-2).map((r: any) => `"${r.text}" (from ${r.from})`);
   const piece = v.piece ? `\nThe band is playing the piece "${v.piece.name}": ${v.piece.intent}; motifs ${JSON.stringify(v.piece.motifs)}.` : "";
-  return `Song ${v.id}, genre ${v.song?.genre}, feel "${v.song?.feel ?? "not named"}", bar ${v.bar} of ${v.ends_at}.
+  return `Song ${v.id}, genre ${v.song?.genre}, feel ${v.song?.feel ? `"${v.song.feel}"` : "(none yet; if you lead, name one)"}, bar ${v.bar} of ${v.ends_at}.
 Tokens (the genre's scale): ${(v.scale || []).join(" ")}. A bar is exactly ${v.slots} space-separated slots: a token
 (optionally with ' for up an octave, , for down, ~ to scoop in, ! accent, _ ghost), "." a rest, "-" hold the note before.
 Genre cues you may send: ${Object.keys(v.genre_cues || {}).join(", ") || "(see the song)"}.

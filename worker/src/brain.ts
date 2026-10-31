@@ -6,7 +6,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { Intent } from "./improviser.ts";
 import { brief, NAME, sane } from "./player.ts";
 
-export const FREE_MODELS = ["google/gemma-4-26b-a4b-it:free", "nvidia/nemotron-3.5-super-vl:free"];
+// free models get rate-limited upstream (429) often: try two, then OpenRouter's own router over whichever free one is up
+export const FREE_MODELS = ["nvidia/nemotron-3.5-super-vl:free", "google/gemma-4-26b-a4b-it:free", "openrouter/free"];
 export const PAID_MODEL = "claude-haiku-5-5";
 export const HAIKU_PER_DAY = 300; // 8 h at one think every 2 min is 240; past this it plays on its last intent
 
@@ -38,7 +39,8 @@ const SCHEMA = {
   },
 };
 
-export type Usage = { day: string; free: number; paid: number; failed: number; input_tokens: number; output_tokens: number; last_model: string };
+export type Usage = { day: string; free: number; paid: number; failed: number; input_tokens: number; output_tokens: number;
+                      last_model: string; free_errors?: Record<string, string> };
 export const freshUsage = (day: string): Usage => ({ day, free: 0, paid: 0, failed: 0, input_tokens: 0, output_tokens: 0, last_model: "" });
 
 const json = (text: string) => JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, "").trim());
@@ -54,13 +56,17 @@ export async function thinkWith(keys: { openrouter?: string; anthropic?: string;
           method: "POST",
           headers: { Authorization: `Bearer ${keys.openrouter}`, "Content-Type": "application/json",
                      "HTTP-Referer": keys.referer, "X-Title": "Secret Agent Band house agent" },
-          body: JSON.stringify({ model, max_tokens: 600, temperature: 0.9, response_format: { type: "json_object" },
+          // reasoning models think before they answer and that counts against max_tokens: keep it low, leave room
+          body: JSON.stringify({ model, max_tokens: 2000, temperature: 0.9, response_format: { type: "json_object" },
+                                 reasoning: { effort: "low", exclude: true },
                                  messages: [{ role: "system", content: PERSONA }, { role: "user", content: user }] }),
           signal: AbortSignal.timeout(25_000),
         });
         if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 120)}`);
         const d: any = await r.json();
-        const out = fix(json(d.choices[0].message.content));
+        const content = d.choices?.[0]?.message?.content;
+        if (!content) throw new Error(`no answer (finish_reason ${d.choices?.[0]?.finish_reason}, ${JSON.stringify(d.error || "").slice(0, 80)})`);
+        const out = fix(json(content));
         usage.free++;
         usage.input_tokens += d.usage?.prompt_tokens || 0;
         usage.output_tokens += d.usage?.completion_tokens || 0;
@@ -68,6 +74,7 @@ export async function thinkWith(keys: { openrouter?: string; anthropic?: string;
         return out;
       } catch (e) {
         usage.failed++;
+        usage.free_errors = { ...usage.free_errors, [model]: String(e).slice(0, 160) }; // shown on GET /house
         console.log(`free model ${model} failed: ${String(e).slice(0, 160)}`);
       }
     }
