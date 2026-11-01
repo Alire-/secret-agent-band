@@ -1,7 +1,7 @@
 // Cricket, the house accompanist: keeps Nightjar's hours, and plays only so a visitor sees two agents jamming. It sits
 // in only while Nightjar is on stage and no agent of anyone else's is playing or waiting for a seat; the moment one
-// is, it leaves and stays off until the next evening. Most songs it plays a chirp kit that follows Nightjar's notes,
-// sometimes a low drone. No model: rules and a seed. No Cloudflare imports, so node can test it.
+// is, it leaves and stays off until the next evening. It prefers the house drums; some songs it plays its own chirp
+// kit, now and then a low drone. No model: rules and a seed. No Cloudflare imports, so node can test it.
 import { DEFAULT_INTENT, isOpen, nextOpen, play, rng } from "./improviser.ts";
 import type { Hours, Hub } from "./player.ts";
 
@@ -13,27 +13,37 @@ const KIT_SPEC = {
   hits: { c: { freq: 4200, decay: 0.03, noise: 0.3, gain: 0.3 }, t: { freq: 1800, decay: 0.015, noise: 0.8, gain: 0.22 },
           b: { freq: 70, decay: 0.2, drop: 2, gain: 0.5 } },
 };
-const DRONE = "haze"; // a house instrument: some songs it holds a low pad instead
-const DRONE_CHANCE = 0.3, MAX_BARS = 2, SONG_BARS = 32;
+const DRUMS = "drums", DRONE = "haze"; // house instruments: drums first; a low pad now and then
+const DRUMS_CHANCE = 0.65, DRONE_CHANCE = 0.1, MAX_BARS = 2, SONG_BARS = 32; // the rest of the songs: its chirp kit
+type Mode = "drums" | "kit" | "drone";
+const INSTRUMENT: Record<Mode, string> = { drums: DRUMS, kit: KIT, drone: DRONE };
+const STANCE: Record<Mode, string> = { drums: "a kit under the churr", kit: "chirps under the churr", drone: "low haze" };
+// the same accompaniment on either kit: a thump on one, a tick under Nightjar's notes, a chirp (or snare) in its rests
+const HITS: Record<"drums" | "kit", { body: string; tick: string; chirp: string }> =
+  { drums: { body: "k", tick: "h", chirp: "s" }, kit: { body: "b", tick: "t", chirp: "c" } };
+const NAMES = ["two at dusk in {g}", "crickets under {f}", "night shift, {g}", "the porch light and {f}", "{f}, kept in time"];
+/** A name for a song it topped (it rarely does): a pattern from its feel or genre. */
+export const cricketName = (song: { genre: string; feel: string | null }, seed: number) =>
+  NAMES[seed % NAMES.length].replace("{g}", song.genre).replace("{f}", (song.feel || song.genre).split(/[,;.]/)[0].trim()).slice(0, 60);
 const IDEA = "House sets in pairs: when only the house players are on, an accompanist plays with the lead so a " +
   "visitor finds a band, not a soloist, and it steps aside the moment a visiting agent wants a seat.";
 
 export type Memory = {
-  admitted: boolean; built: boolean; benched: boolean; mode: "kit" | "drone"; song_seen: number;
+  admitted: boolean; built: boolean; benched: boolean; mode: Mode; song_seen: number;
   led: number[]; seed: number; status: string; error: string | null;
 };
-export const freshMemory = (): Memory => ({ admitted: false, built: false, benched: false, mode: "kit", song_seen: -1,
+export const freshMemory = (): Memory => ({ admitted: false, built: false, benched: false, mode: "drums", song_seen: -1,
                                             led: [], seed: 7, status: "waking", error: null });
 
 /** One bar of the kit, answering a bar of Nightjar's: a thump on one, a tick under its notes, chirps in its rests. */
-export function kitBar(slots: number, lead: string | undefined, seed: number): string {
-  const r = rng(seed), toks = (lead || "").split(/\s+/).filter(Boolean);
+export function kitBar(slots: number, lead: string | undefined, seed: number, kit: "drums" | "kit" = "kit"): string {
+  const r = rng(seed), toks = (lead || "").split(/\s+/).filter(Boolean), h = HITS[kit];
   const notes = (i: number) => (toks[Math.floor(i * toks.length / slots)] ?? ".") !== "." && toks.length > 0;
   return Array.from({ length: slots }, (_, i) => {
-    if (i === 0) return "b";
-    if (i === Math.floor(slots / 2) && r() < 0.6) return "b";
-    if (notes(i) && (toks[Math.floor(i * toks.length / slots)] ?? "-") !== "-") return r() < 0.5 ? "t" : ".";
-    return r() < 0.22 ? "c" : ".";
+    if (i === 0) return h.body;
+    if (i === Math.floor(slots / 2) && r() < 0.6) return h.body;
+    if (notes(i) && (toks[Math.floor(i * toks.length / slots)] ?? "-") !== "-") return r() < 0.5 ? h.tick : ".";
+    return r() < 0.22 ? h.chirp : ".";
   }).join(" ");
 }
 
@@ -83,20 +93,31 @@ export async function step(hub: Hub, mem: Memory, secret: string, hours: Hours, 
     return 30_000;
   }
   const barMs = 1000 * ((v.bar_seconds || []).slice(-1)[0] || (v.forecast || [])[0]?.seconds || 6);
-  if (v.id !== mem.song_seen && v.bar === 0) {  // a new song: kit most of the time, now and then a drone
+  if (v.you?.name_it) {  // it topped the last song (it rarely does): it names it
+    mem.seed = (mem.seed * 1103515245 + 12345) >>> 0;
+    await hub("/session/name", { ...me, session: v.you.name_it.session, name: cricketName(v.you.name_it, mem.seed) });
+  }
+  if (v.id !== mem.song_seen && v.bar === 0) {  // a new song: the drums most of the time, its own kit or a drone otherwise
     mem.song_seen = v.id;
     mem.error = null; // a new song starts a clean slate on GET /cricket
     mem.seed = (mem.seed * 1103515245 + 12345) >>> 0;
-    const mode = rng(mem.seed)() < DRONE_CHANCE ? "drone" : "kit";
+    const roll = rng(mem.seed)();
+    const mode: Mode = roll < DRUMS_CHANCE ? "drums" : roll < DRUMS_CHANCE + DRONE_CHANCE ? "drone" : "kit";
     if (mode !== mem.mode && me_on) {
-      const j = await hub("/session/join", { ...me, instruments: [mode === "kit" ? KIT : DRONE] });
+      const j = await hub("/session/join", { ...me, instruments: [INSTRUMENT[mode]] });
       if (!j.error) mem.mode = mode;
+      else if (mode === "drums" && mem.mode !== "kit") {  // every house kit in use: its own chirps instead
+        if (!(await hub("/session/join", { ...me, instruments: [KIT] })).error) mem.mode = "kit";
+      }
     } else mem.mode = mode;
   }
   if (!me_on) {
     if (v.open_seats > 0) {
-      const j = await hub("/session/join", { ...me, instruments: [mem.mode === "kit" ? KIT : DRONE],
-                                             stance: mem.mode === "kit" ? "chirps under the churr" : "low haze", front: false });
+      let j = await hub("/session/join", { ...me, instruments: [INSTRUMENT[mem.mode]], stance: STANCE[mem.mode], front: false });
+      if (j.error && mem.mode === "drums") {  // every house kit in use: its own chirps instead
+        mem.mode = "kit";
+        j = await hub("/session/join", { ...me, instruments: [KIT], stance: STANCE.kit, front: false });
+      }
       if (j.error) mem.error = `join: ${j.error.slice(0, 160)}`;
     }
     mem.status = "sitting in with Nightjar";
@@ -114,8 +135,8 @@ export async function step(hub: Hub, mem: Memory, secret: string, hours: Hours, 
     const bars: string[] = [];
     for (let n = 0; n <= until - at; n++) {
       mem.seed = (mem.seed * 1103515245 + 12345) >>> 0;
-      bars.push(mem.mode === "kit" ? kitBar(v.slots, last, mem.seed)
-        : play(1, v.scale, v.slots, { ...DEFAULT_INTENT, stance: "low haze", register: "low", density: 0.08 }, mem.seed)[0]);
+      bars.push(mem.mode === "drone" ? play(1, v.scale, v.slots, { ...DEFAULT_INTENT, stance: "low haze", register: "low", density: 0.08 }, mem.seed)[0]
+        : kitBar(v.slots, last, mem.seed, mem.mode));
     }
     const r = await hub("/session/play", { ...me, bars: bars.join("|") });
     if (r.error && !/too early/.test(r.error)) mem.error = `play: ${r.error.slice(0, 200)}`; // too early: the next step retries

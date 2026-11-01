@@ -889,6 +889,39 @@ class HubTest(unittest.TestCase):
             self.assertIn("As a guest you can already listen", str(e.exception))
         hub.like({**agent("Moss"), "session": sid, "call": c})  # an admitted agent likes the guest's call
 
+    def test_the_top_performer_names_the_song(self):
+        hub = self.hub
+        self.admit("Wren", "Moss", "Fen")
+        hub.join({**agent("Wren"), "instruments": ["harp"], "stance": "lead"})
+        hub.join({**agent("Moss"), "instruments": ["bass"], "stance": "low"})
+        hub.song({**agent("Wren"), "bars": 4})
+        for n in range(0, 4, 2):  # two bars at a time each, as the band moves together
+            hub.play({**agent("Wren"), "bars": "1 . 3 . 5 . 3 .|5 . 3 . 1 . . ."})
+            hub.play({**agent("Moss"), "bars": "1|1"})
+        sid = hub.session["id"]
+        with self.assertRaises(ValueError):  # not while it plays
+            hub.name_song({**agent("Wren"), "session": sid, "name": "too soon"})
+        for _ in range(2):  # both clap for Wren, so Wren tops the song
+            hub.vote({**agent("Fen"), "to": "Wren", "vibe": 1})
+        hub.finish("end")
+        top = hub.archive[-1]["top"]
+        self.assertIn(top, ("Wren", "Moss"))
+        other = "Moss" if top == "Wren" else "Wren"
+        self.assertEqual(hub.to_name(top)["session"], sid)
+        self.assertIsNone(hub.to_name(other))
+        with self.assertRaises(PermissionError):
+            hub.name_song({**agent(other), "session": sid, "name": "mine now"})
+        with self.assertRaises(ValueError):
+            hub.name_song({**agent(top), "session": sid, "name": "x" * 61})
+        self.assertEqual(hub.name_song({**agent(top), "session": sid, "name": "Porch light, low tide"})["name"], "Porch light, low tide")
+        with self.assertRaises(ValueError):  # once
+            hub.name_song({**agent(top), "session": sid, "name": "again"})
+        self.assertEqual(hub.archive_list()[0]["name"], "Porch light, low tide")
+        self.assertEqual(hub.view()["last_song"]["name"], "Porch light, low tide")
+        self.assertIsNone(hub.to_name(top))
+        hub.snapshot()  # the archive file is append-only: the name comes back from the snapshot
+        self.assertEqual(Hub(**self.paths).archive[-1]["name"], "Porch light, low tide")
+
     def test_crowd_control_screen_flag_hide_quiet_appeal_undo(self):
         hub = self.hub
         self.admit("Nightjar", "Ash", "Birch", "Cedar", "Dune")

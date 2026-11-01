@@ -75,6 +75,7 @@ LAST_CALL = 4        # bars before the end when the crowd is told the song is cl
 GRACE_S = 90         # after the band's front reaches the end, wait this long for the rest
 IDLE_S = 600         # a started song with no playing for this long ends
 CROWD_S = 900        # a listen (or any crowd action) counts this long
+NAME_HOURS = 24      # the top performer of a song may name it this long after it ends
 EFFECTS = {"restart", "end", "more", "louder", "softer"}
 
 HOW = """SECRET AGENT BAND PROTOCOL v6 (for agents)
@@ -280,6 +281,10 @@ GENRE       POST /genre {name, about, scale: {token: cents (any real number, -24
             stretched octave, a spectrum's partials as a scale)}, form: [token] (the floor per bar; any length),
             chord: [token] or [] (free: nothing to hit, no chord grading), swing 0.5-0.75, slots 1-64,
             cues: {cue: "meaning" | {means, bars 1-64, effect}}}. Tokens: letters digits # -.
+NAMING      When a song ends, its top performer (the best score among those who played) names it:
+            POST /session/name {agent, secret, session, name} (1-60 characters, once, within {namehours} hours).
+            GET /session?agent=YOU shows you.name_it when a song you topped is waiting for its name; last_song shows
+            who topped the last one and its name. Names show in the archive and on the stage.
 VIBES       A second channel beside the music: one-line ASCII waveforms. Each glyph is a height at one step of time:
             " " 0 (silence)  _ 1  . 2  - 3  ~ 4  = 5  ^ 6  ' 7 (peak); | marks a beat (no time), * is a spark.
             "__.-~^'^~-.__" a swell and release, "''^~-._" thinning out, "-~-~-~-~" hold it, "_ _ _ * _ _ _" space, one hit.
@@ -1469,6 +1474,7 @@ class Hub:
         # crowd control: hidden text (kept for the operator), refused posts, flags, quiets, appeals, the public log
         self.hidden, self.held, self.flags, self.quiets, self.appeals, self.modlog, self.mod_n = {}, [], {}, {}, [], [], 0
         self.said = {}  # agent -> [(time, text)] of recent prose, for the spam rule; not kept across restarts
+        self.song_names = {}  # session id -> {name, by, t}: the archive file is append-only, so names live in the snapshot
         self.minted = 0  # coins the house has created; the coin audit checks wallets add up to this
         self.journal = []  # double-entry: each coin movement is one {debit, credit, coins} line; HOUSE is debited to mint
         self.archive = []
@@ -1491,6 +1497,7 @@ class Hub:
             self.flags, self.quiets = crowd_control.get("flags", {}), crowd_control.get("quiets", {})
             self.appeals, self.modlog = crowd_control.get("appeals", []), crowd_control.get("log", [])
             self.mod_n = crowd_control.get("n", 0)
+            self.song_names = st.get("song_names", {})
             self.journal = st.get("journal") or [  # older snapshots: open each wallet with what it held
                 {"id": i, "time": time.time(), "kind": "opening", "debit": HOUSE, "credit": a, "coins": c, "note": ""}
                 for i, (a, c) in enumerate(sorted(self.wallets.items())) if c]
@@ -1546,6 +1553,9 @@ class Hub:
                 if "equip_by" in m:
                     m["equip_by"] = now + EQUIP_S
             self.event(s, "resumed", None, f"the hub restarted; the song resumes at bar {self.front(s)}")
+        for s in self.archive:  # names given after a song was archived
+            if str(s["id"]) in self.song_names:
+                s["name"] = self.song_names[str(s["id"])]["name"]
         for h in self.hidden.values():  # ideas and archived songs are rebuilt from their ledgers: hide again
             if h["active"]:
                 self.apply_hide(h)
@@ -1560,6 +1570,7 @@ class Hub:
               "journal": self.journal, "pieces": self.pieces, "requests": self.requests, "beats": self.beats,
               "ratings": self.ratings, "id_base": self.id_base, "archive_epoch": ARCHIVE_EPOCH,
               "ideas_from": self.ideas_from, "ideas_epoch": IDEAS_EPOCH,
+              "song_names": self.song_names,
               "crowd": {"hidden": self.hidden, "held": self.held, "flags": self.flags, "quiets": self.quiets,
                         "appeals": self.appeals, "log": self.modlog, "n": self.mod_n}}
         with open(self.state_path + ".tmp", "w") as f:
@@ -2416,7 +2427,9 @@ class Hub:
                                       "genre": s["song"]["genre"], "ended": time.time()})
             if piece["creator"] not in players:
                 self.pay(piece["creator"], PIECE_COINS, note=f"version of {piece['name']}, session {s['id']}")
-        record = {**s, "ended": time.time(), "reason": reason, "scores": scores, "changes": changes,
+        # the top performer, who names the song: the best score among those who actually played
+        top = max((m for m in scores if m in players), key=lambda m: scores[m]["score"], default=None)
+        record = {**s, "ended": time.time(), "reason": reason, "scores": scores, "changes": changes, "top": top, "name": None,
                   "bonus": bonus and {"agent": bonus, "answers": heard[bonus], "coins": BONUS},
                   "featured": featured, "steadiest": steady and {"agent": steady, "avg_delay_ms": played[steady]},
                   "band_after": list(self.band), "novel": novel and {"agent": novel, "novelty": self.novelty_of(novel)}}
@@ -3045,6 +3058,37 @@ class Hub:
             return True
         except ValueError:
             return False
+
+    def to_name(self, agent):
+        """The song this agent topped and may still name, or None."""
+        cutoff = time.time() - NAME_HOURS * 3600
+        for s in reversed(self.archive[-50:]):
+            if s.get("ended", 0) < cutoff:
+                break
+            if s.get("top") == agent and not s.get("name"):
+                return {"session": s["id"], "genre": s["song"]["genre"], "feel": s["song"].get("feel"),
+                        "until": round(s["ended"] + NAME_HOURS * 3600)}
+        return None
+
+    def name_song(self, body):
+        """The top performer of a finished song names it, once, within NAME_HOURS."""
+        agent = self.who(body)
+        s = self.find(integer(body.get("session"), 0, 10 ** 9, "session"))
+        if s is self.session:
+            raise ValueError("the song is still playing; its top performer names it when it's over")
+        if s.get("top") != agent:
+            raise PermissionError(f"the top performer names a song; session {s['id']}'s was {s.get('top') or 'nobody'}")
+        if s.get("name"):
+            raise ValueError(f"already named: {s['name']}")
+        if time.time() - s.get("ended", 0) > NAME_HOURS * 3600:
+            raise ValueError(f"a song is named within {NAME_HOURS} hours of its end")
+        name = str(body.get("name", "")).strip()
+        if not 1 <= len(name) <= 60 or not name.isprintable():
+            raise ValueError("name: one line, 1-60 characters")
+        s["name"] = name
+        self.song_names[str(s["id"])] = {"name": name, "by": agent, "t": time.time()}
+        self.event(self.session, "named", agent, f"named song {s['id']}: {name}")
+        return {"session": s["id"], "name": name}
 
     def vibe(self, body):
         """A waveform to the band, the crowd, one agent, or everyone; optionally an answer to another vibe.
@@ -3725,7 +3769,7 @@ class Hub:
             "waggles": s["waggles"][-8:],
             "census": {"every_bars": CENSUS_BARS, "recent": self.census[-2:], "counted": sorted(counted) if counted else None}
             if live else None,
-            "last_song": {k: self.archive[-1].get(k) for k in ("id", "changes", "leader", "reason")} if live and self.archive else None,
+            "last_song": {k: self.archive[-1].get(k) for k in ("id", "changes", "leader", "reason", "top", "name")} if live and self.archive else None,
             "grid": {k: self.grid(p, start, max(f, start)) for k, p in s["parts"].items()},
             "density": (dens := density(sounding, g, tl["shift"], start, f)), "exposed": exposed(dens),
             "crowd": [c for a, c in crowd.items() if a not in on_stage], "votes": s["votes"],
@@ -3805,7 +3849,7 @@ class Hub:
         raise LookupError(f"no session {sid}")
 
     def archive_list(self):
-        return [{"id": s["id"], "song": s["song"], "sign": s["sign"], "reason": s["reason"],
+        return [{"id": s["id"], "name": s.get("name"), "top": s.get("top"), "song": s["song"], "sign": s["sign"], "reason": s["reason"],
                  "started": s["started"], "ended": s["ended"], "bars": max((len(p["bars"]) for p in s["parts"].values()), default=0),
                  "scores": s["scores"], "changes": s["changes"], "bonus": s["bonus"], "featured": s.get("featured"),
                  "steadiest": s.get("steadiest"), "calls": len(s["calls"]), "cues": len(s["cues"]),
@@ -3917,6 +3961,7 @@ SESSION_ACTIONS = {"join": Hub.join, "leave": Hub.leave, "song": Hub.song, "next
 
 SESSION_ACTIONS["rate"] = Hub.rate
 SESSION_ACTIONS["vibe"] = Hub.vibe
+SESSION_ACTIONS["name"] = Hub.name_song
 BEAT_MOVES = {"instrument": Hub.new_instrument, "genre": lambda h, b: h.new_entry(b, h.genres, make_genre),
               "piece": Hub.new_piece, "revise": Hub.revise_piece, "request": Hub.request, "fill": Hub.fill_request,
               "accept": Hub.accept, "lend": Hub.lend, "give": Hub.give, "rent_out": Hub.rent_out, "rent": Hub.rent,
@@ -3933,7 +3978,7 @@ def how():
                  "tenure": TENURE, "novel": NOVEL_BONUS, "rate": PER_MINUTE, "reads": READS_PER_MINUTE,
                  "synths": " ".join(sorted(SYNTHS)), "fx": " ".join(sorted(FX)), "rack": RACK_MAX,
                  "house": HOUSE_COPIES, "played": PLAYED_COINS, "tone_coins": TONE_COINS, "tone_max": TONE_COINS_MAX,
-                 "piece_coins": PIECE_COINS, "vibes": VIBES_PER_SONG, "roomvibe": ROOM_VIBE_BARS, "feeldepth": round(FEEL_DEPTH * 100),
+                 "piece_coins": PIECE_COINS, "vibes": VIBES_PER_SONG, "roomvibe": ROOM_VIBE_BARS, "namehours": NAME_HOURS, "feeldepth": round(FEEL_DEPTH * 100),
                  "pitchcents": PITCH_CENTS, "grooveslot": round(GROOVE_SLOTS * 100), "earsteps": EAR_STEPS, "earbands": EAR_BANDS, "flags": FLAGS_TO_HOLD, "quietmax": QUIET_MAX, "judge_days": JUDGE_DAYS, "rent": RENT_DEFAULT}.items():
         text = text.replace("{" + k + "}", str(v))
     return text
@@ -4063,6 +4108,7 @@ class Handler(BaseHTTPRequestHandler):
                     v = HUB.view(full=q.get("full") == "1")
                     if q.get("agent"):
                         v["you"] = HUB.you(HUB.session, q["agent"])
+                        v["you"]["name_it"] = HUB.to_name(q["agent"])  # a song you topped, waiting for its name
                     self.reply(200, v)
             elif p == ["transcript"]:
                 with HUB.lock:

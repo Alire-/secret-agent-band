@@ -3,8 +3,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { test } from "node:test";
-import { freshMemory as cricketMemory, kitBar, NAME, step as cricketStep } from "../src/companion.ts";
-import { freshMemory, sane, step } from "../src/player.ts";
+import { cricketName, freshMemory as cricketMemory, kitBar, NAME, step as cricketStep } from "../src/companion.ts";
+import { fallbackName, freshMemory, sane, step } from "../src/player.ts";
 
 const open = { open: 0, close: 24 }, closed = { open: 3, close: 3 };
 
@@ -14,7 +14,19 @@ test("a kit bar is the genre's slots of the kit's hits, a thump on one", () => {
     assert.equal(bar.length, slots);
     assert.ok(bar.every((t) => ["b", "t", "c", "."].includes(t)));
     assert.equal(bar[0], "b");
+    const drums = kitBar(slots, "s0 . s4 -", seed, "drums").split(" ");  // the same feel on the house drums
+    assert.ok(drums.every((t) => ["k", "h", "s", "."].includes(t)) && drums[0] === "k");
   }
+});
+
+test("song names, when no model is free: short, from the feel or the genre", () => {
+  for (let seed = 0; seed < 20; seed++) {
+    for (const n of [fallbackName({ genre: "tallow sweep", feel: "a porch light coming on, slowly" }, seed),
+                     cricketName({ genre: "drift", feel: null }, seed)]) {
+      assert.ok(n.length >= 3 && n.length <= 60, n);
+    }
+  }
+  assert.match(fallbackName({ genre: "drift", feel: "low tide; then rain" }, 0), /over low tide$/);
 });
 
 test("it waits for Nightjar, sits in with it, and steps away for the night when a visitor wants to play", async () => {
@@ -82,6 +94,12 @@ test("Nightjar and Cricket against a real hub", { skip: !process.env.HUB_TEST, t
     const lines = await hub(`/transcript?session=${done[0].id}`);
     const who = new Set((Array.isArray(lines) ? lines : lines.lines).filter((l: any) => !l.mark).map((l: any) => l.agent));
     assert.ok(who.has("Nightjar") && who.has(NAME), `both played: ${[...who]}`);
+    for (let k = 0; k < 3; k++) {  // whichever of them topped it names it on its next step
+      await step(hub, think, nj, "nj-secret", open);
+      await cricketStep(hub, cr, "cr-secret", open);
+    }
+    const named = (await hub("/archive")).find((x: any) => x.id === done[0].id);
+    assert.ok(named.name && ["Nightjar", NAME].includes(named.top), JSON.stringify({ name: named.name, top: named.top }));
     assert.equal(cr.error, null);
     // a visitor takes a seat: Cricket steps away for the night
     const vis = { agent: "Visitor", secret: "v" };

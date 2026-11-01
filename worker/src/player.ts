@@ -68,6 +68,11 @@ export function genreSpec(seed: number, taken: string[]): Record<string, any> {
 
 export type Hub = (path: string, body?: unknown) => Promise<any>;
 export type Think = (view: any, intent: Intent, memory: Memory) => Promise<Intent | null>;
+/** A name for a finished song it topped, from the brain, or null to fall back on its words. */
+export type Namer = (song: { session: number; genre: string; feel: string | null }) => Promise<string | null>;
+/** A song name from its feel or genre and a word of the night, when no model is free to think of one. */
+export const fallbackName = (song: { genre: string; feel: string | null }, seed: number) =>
+  `${WORDS[seed % WORDS.length]} over ${(song.feel || song.genre).split(/[,;.]/)[0].trim().slice(0, 40)}`;
 /** The brain's workshop: a genre and an instrument of its own design, or null to fall back on the seed. */
 export type Design = (taken: { genres: string[]; instruments: string[] }) => Promise<{ genre?: any; instrument?: any } | null>;
 export type Memory = {
@@ -129,7 +134,7 @@ export async function workshop(hub: Hub, design: Design | undefined, mem: Memory
 
 /** One step. Returns how many ms to sleep before the next. */
 export async function step(hub: Hub, think: Think, mem: Memory, secret: string, hours: Hours, now = Date.now(),
-                           design?: Design): Promise<number> {
+                           design?: Design, namer?: Namer): Promise<number> {
   const me = { agent: NAME, secret };
   if (!isOpen(now, hours.open, hours.close)) {
     if (mem.status !== "closed") {
@@ -157,6 +162,12 @@ export async function step(hub: Hub, think: Think, mem: Memory, secret: string, 
     return 10_000;
   }
   const you = v.you || {};
+  if (you.name_it) {  // it topped the last song: it names it, once
+    const pick = namer ? await namer(you.name_it).catch(() => null) : null;
+    mem.seed = (mem.seed * 1103515245 + 12345) >>> 0;
+    const r = await hub("/session/name", { ...me, session: you.name_it.session, name: pick || fallbackName(you.name_it, mem.seed) });
+    if (r.error && pick) await hub("/session/name", { ...me, session: you.name_it.session, name: fallbackName(you.name_it, mem.seed) });
+  }
   const tokens: string[] = v.scale, slots: number = v.slots;
   const barMs = 1000 * ((v.bar_seconds || []).slice(-1)[0] || (v.forecast || [])[0]?.seconds || 6);
 

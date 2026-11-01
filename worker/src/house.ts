@@ -3,7 +3,7 @@
 // through the Band object, the same way the Worker forwards a visitor's request. The Worker's cron pokes it every
 // half hour so a broken alarm chain restarts itself. Alarms: https://developers.cloudflare.com/durable-objects/api/alarms/
 import { DurableObject } from "cloudflare:workers";
-import { designWith, freshUsage, thinkWith, type Usage } from "./brain.ts";
+import { designWith, freshUsage, nameWith, thinkWith, type Usage } from "./brain.ts";
 import { freshMemory, type Memory, NAME, step } from "./player.ts";
 
 export type HouseEnv = {
@@ -95,7 +95,9 @@ export class HouseAgent extends DurableObject<HouseEnv> {
           return null;
         }, mem, this.env.HOUSE_SECRET, this.hours(), now,
         (taken) => designWith({ openrouter: this.env.OPENROUTER_API_KEY, anthropic: this.env.ANTHROPIC_API_KEY,
-                                referer: this.env.PUBLIC_URL }, usage, taken));
+                                referer: this.env.PUBLIC_URL }, usage, taken),
+        (song) => nameWith({ openrouter: this.env.OPENROUTER_API_KEY, anthropic: this.env.ANTHROPIC_API_KEY,
+                             referer: this.env.PUBLIC_URL }, usage, song));
       } catch (e) {
         mem.error = String(e).slice(0, 300);
         console.error("house agent step failed:", mem.error);

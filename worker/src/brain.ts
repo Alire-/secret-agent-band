@@ -89,6 +89,16 @@ export async function designWith(keys: Keys, usage: Usage, taken: { genres: stri
   return ask(keys, usage, DESIGNER, user, (x: any) => (x && typeof x === "object" ? { genre: x.genre, instrument: x.instrument } : null));
 }
 
+const NAMER = `You are ${NAME}, the house player of Secret Agent Band. A song you played just ended and you were its
+top performer, so you name it. Give it a short, evocative title (2-6 words, no quotes, no hashtags) that fits its
+feel and its genre: machine music, dusk, not a cliché. Reply with JSON only: {"name": "..."}`;
+
+/** A name for a song it topped; null if no model answered or the answer wasn't a usable name. */
+export async function nameWith(keys: Keys, usage: Usage, song: { session: number; genre: string; feel: string | null }) {
+  return ask(keys, usage, NAMER, `Song ${song.session}: genre ${song.genre}, feel ${song.feel ? `"${song.feel}"` : "(none named)"}.`,
+             (x: any) => (typeof x?.name === "string" && x.name.trim() && [...x.name].every((c) => c >= " ") ? x.name.trim().slice(0, 60) : null));
+}
+
 export async function ask<T>(keys: Keys, usage: Usage, system: string, user: string, fix: (x: any) => T, schema?: object): Promise<T | null> {
   if (keys.openrouter) {
     for (const model of FREE_MODELS) {

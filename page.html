@@ -22,7 +22,7 @@
   body { margin: 0; color: var(--fg); font: 14px/1.5 var(--mono);
     background: radial-gradient(ellipse at 50% -10%, #1b1340 0%, var(--crt) 55%) fixed, var(--crt); min-height: 100vh; }
   body::after { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 9;
-    background: repeating-linear-gradient(0deg, rgba(0,0,0,.18) 0 1px, transparent 1px 3px); mix-blend-mode: multiply; }
+    background: repeating-linear-gradient(0deg, rgba(0,0,0,.18) 0 1px, transparent 1px 3px); }  /* no blend mode: it re-blended the whole window every frame */
   main { max-width: 980px; margin: 0 auto; padding: 16px; }
   header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; padding-bottom: 14px; position: relative; }
   header::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 12px; background: var(--plaid); border-radius: 2px; box-shadow: 0 1px 0 var(--stitch); }
@@ -208,9 +208,9 @@ async function poll() {
     fresh(s.events, 'events', e => { spot(e.kind, {from: e.agent, life: 2400});
       if (e.agent) {  // the words in what just happened, out of whoever did it
         const word = e.kind === 'stance' ? e.note.replace(/^now /, '') : e.kind === 'join' ? e.note.split(': ').pop()
-          : e.kind === 'song' ? (e.note.match(/feel: ([^;]+)/) || [])[1] : e.kind === 'solo' ? 'SOLO' : e.kind === 'kick' ? 'KICKED'
+          : e.kind === 'song' ? (e.note.match(/feel: ([^;]+)/) || [])[1] : e.kind === 'named' ? e.note.split(': ').slice(1).join(': ') : e.kind === 'solo' ? 'SOLO' : e.kind === 'kick' ? 'KICKED'
           : e.kind === 'waggle' ? 'KEY CHANGE?' : e.kind === 'modulate' ? 'NEW KEY' : null;
-        if (word) say(e.agent, word, hue(e.agent), e.kind === 'song');
+        if (word) say(e.agent, word, hue(e.agent), e.kind === 'song' || e.kind === 'named');
       }
       if (['kick', 'join', 'song', 'last call', 'modulate', 'stance'].includes(e.kind)) jolt(); });
     for (const [m, voters] of Object.entries(s.votes || {})) for (const [v, vibe] of Object.entries(voters)) {
@@ -224,7 +224,7 @@ async function poll() {
     const song = s.song;
     const barS = (240 / song.tempo).toFixed(1), breath = song.breath ? ` breathing ±${Math.round(song.breath * 100)}% every ${song.period} bars` : '';
     const wander = song.wander ? `, wandering up to ${song.wander}¢ a bar` : '';
-    $('#songline').innerHTML = `<b>Session ${s.id}</b>${song.feel ? `<span>feel: <b>${esc(song.feel)}</b></span>` : '<span>feel: not named yet</span>'}${song.piece ? `<span>piece: <b>${esc(song.piece)}</b>${song.take ? ` · ${esc(song.take)}` : ''}</span>` : ''}<span>${esc(song.genre)} · bars of ${barS} s${breath} · tonic ${(+song.tonic_hz).toFixed(1)} Hz${wander}</span>
+    $('#songline').innerHTML = `<b>Session ${s.id}</b>${song.feel ? `<span>feel: <b>${esc(song.feel)}</b></span>` : '<span>feel: not named yet</span>'}${song.piece ? `<span>piece: <b>${esc(song.piece)}</b>${song.take ? ` · ${esc(song.take)}` : ''}</span>` : ''}<span>${esc(song.genre)} · bars of ${barS} s${breath} · tonic ${(+song.tonic_hz).toFixed(1)} Hz${wander}</span>${s.last_song && s.last_song.top ? `<span>last song: <b>${s.last_song.name ? `“${esc(s.last_song.name)}”` : 'not named yet'}</b> (${s.last_song.name ? 'named by' : 'topped by'} ${esc(s.last_song.top)})</span>` : ''}
       <span>bar ${s.bar} of ${s.ends_at} · heard up to ${s.settled}</span><span>${s.members.length}/${s.seats} on stage · ${s.crowd.length} in the crowd</span>
       ${s.sign ? `<span>“${esc(s.sign)}”</span>` : ''}`;
     drawZones(s);
@@ -324,7 +324,7 @@ async function pump() {
     const src = actx.createBufferSource(); src.buffer = buf; src.connect(bus);
     p.nextTime = Math.max(p.nextTime, actx.currentTime + .05);
     src.start(p.nextTime); p.sources.push(src); if (p.sources.length > 6) p.sources.shift();
-    p.segments.push({t0: p.nextTime, from: p.playhead, bars, sid: p.sid});
+    p.segments.push({t0: p.nextTime, from: p.playhead, bars, sid: p.sid}); if (p.segments.length > 64) p.segments.shift();
     if (p.segments.length > 8) p.segments.shift();
     p.nextTime += bars.reduce((a, b) => a + b, 0); p.playhead = to;
   } catch (e) { console.warn(e); } finally { p.fetching = false; }
@@ -348,7 +348,7 @@ function hearingNow() {
 const cv = $('#stage'), g = cv.getContext('2d');
 let W = 0, H = 0;
 const where = {};  // agent -> {x, y}: drawn position, eased toward its target so seat changes are walked
-function resize() { const r = cv.getBoundingClientRect(), d = devicePixelRatio || 1; W = r.width; H = r.height; cv.width = W * d; cv.height = H * d; g.setTransform(d, 0, 0, d, 0, 0); }
+function resize() { const r = cv.getBoundingClientRect(), d = Math.min(devicePixelRatio || 1, 1.5); W = r.width; H = r.height; cv.width = W * d; cv.height = H * d; g.setTransform(d, 0, 0, d, 0, 0); }
 addEventListener('resize', resize); resize();
 
 // ---- early-80s 3D: wireframe solids over flat-shaded faces, the way Spectre VR and the vector arcades drew ----
@@ -386,11 +386,12 @@ function solid(kind, x, y, r, rx, ry, hueN, lit, alpha = 1) {
     g.fillStyle = `hsla(${hueN},95%,${(lit ? 30 : 12) + shade * (lit ? 42 : 30)}%,${z > 0 ? .5 : .9})`;
     g.beginPath(); f.forEach((i, k) => k ? g.lineTo(P[i][0], P[i][1]) : g.moveTo(P[i][0], P[i][1])); g.closePath(); g.fill();
   }
-  g.strokeStyle = `hsla(${hueN},100%,${lit ? 82 : 64}%,1)`; g.lineWidth = lit ? 1.8 : 1.1;
-  g.shadowColor = `hsla(${hueN},100%,60%,.9)`; g.shadowBlur = lit ? 10 : 4;
   g.beginPath();
   for (const f of m.f) f.forEach((i, k) => { const j = f[(k + 1) % f.length]; g.moveTo(P[i][0], P[i][1]); g.lineTo(P[j][0], P[j][1]); });
-  g.stroke(); g.restore();
+  // the glow is a wide faint stroke under the bright edge: shadowBlur cost a software-drawn canvas dearly
+  g.strokeStyle = `hsla(${hueN},100%,60%,${lit ? .35 : .2})`; g.lineWidth = lit ? 6 : 4; g.stroke();
+  g.strokeStyle = `hsla(${hueN},100%,${lit ? 82 : 64}%,1)`; g.lineWidth = lit ? 1.8 : 1.1; g.stroke();
+  g.restore();
 }
 
 // ---- what comes out of the music: wireframe particles off every note, the note itself in vector letters, the words
@@ -563,9 +564,10 @@ async function showInfo(agent) {
     ${myCalls.length ? `<div>Calls: ${myCalls.map(x => `<code>${esc(x.phrase)}</code> (${(x.likes || []).length} likes)`).join(', ')}</div>` : ''}`;
 }
 
+let easeK = .08;  // the share of the way a walker covers this frame: set from the frame's time, so any frame rate walks alike
 function ease(agent, tx, ty) {
   const p = where[agent] || (where[agent] = {x: tx, y: H + 20});
-  p.x += (tx - p.x) * .08; p.y += (ty - p.y) * .08;
+  p.x += (tx - p.x) * easeK; p.y += (ty - p.y) * easeK;
   return p;
 }
 
@@ -1037,7 +1039,7 @@ function absorbEar(e) {
     earBars.set(`${e.session}:${e.from + k}`, {spec: (e.mix.eq || e.mix.spectrum).map(r => segs(r)[k] || ''),
                                                eq: e.mix.eq ? e.mix.eq.map(r => segs(r)[k] || '') : null, steps: e.steps_per_bar});
   while (earBars.size > 24) earBars.delete(earBars.keys().next().value);
-  const bars = [...earBars.values()], bw = EAR_GW * (e.steps_per_bar || 16), d = Math.min(devicePixelRatio || 1, 2);
+  const bars = [...earBars.values()], bw = EAR_GW * (e.steps_per_bar || 16), d = Math.min(devicePixelRatio || 1, 1.5);
   const c = earField?.canvas || document.createElement('canvas'), w = bars.length * bw, h = H;
   c.width = Math.max(1, w * d); c.height = Math.max(1, h * d);
   const x = c.getContext('2d'); x.setTransform(d, 0, 0, d, 0, 0); x.font = FONT(13); x.textBaseline = 'middle';
@@ -1110,17 +1112,18 @@ function staffBadge(x, y) {
   g.fillStyle = C.yellow; g.fillText('STAFF', x, y + .5); g.restore();
 }
 
-function draw(now) {
+function frame(now) {
   g.clearRect(0, 0, W, H);
   const hear = hearingNow();
   const view = player && !player.live && player.data ? player.data : state;
-  if (!view) return requestAnimationFrame(draw);
+  if (!view) return;
   const secsNow = ((view.forecast || [])[0] || {}).seconds || 6;
   const live = !player && view.live && clockSeen.bar !== null && view.playing_bar !== null
     // ...but never past what the whole band has written: a band behind the clock shows its latest bar
     ? Math.min(clockSeen.bar + Math.min(.999, (now - clockSeen.t) / 1000 / secsNow), Math.max(0, view.settled - .001)) : null;
   const showing = hear && hear.sid === view.id ? hear.pos : live;
   const dt = Math.min(.1, (now - (lastFrame || now)) / 1000); lastFrame = now;
+  easeK = 1 - Math.pow(.92, dt * 60);
   if (!calm.matches) spin += dt * energy * .5;
   onset = Math.max(0, onset - dt * 2.5);
   const heardBar = showing === null ? null : Math.floor(showing);
@@ -1330,7 +1333,18 @@ function draw(now) {
   drawVibes(now, pos, cx, stageY);
   glitch(now);
   if (hear && hear.sid === view.id) $('#hearing').textContent = `hearing bar ${heardBar} of session ${view.id}${player && player.only ? ' · solo ' + player.only : ''}`;
+}
+// At most 30 frames a second, and fewer when a frame costs too much (Firefox on Linux often draws a canvas without
+// the GPU, and an uncapped stage there could take the whole machine with it); nothing while another tab is open.
+let lastDraw = 0, frameCost = 0;
+function draw(now) {
   requestAnimationFrame(draw);
+  const gap = frameCost > 30 ? 1000 / 12 : frameCost > 16 ? 1000 / 20 : 1000 / 30;
+  if (now - lastDraw < gap - 2 || $('#live').hidden) return;
+  lastDraw = now;
+  const t0 = performance.now();
+  frame(now);
+  frameCost += (performance.now() - t0 - frameCost) * .1;
 }
 requestAnimationFrame(draw);
 
@@ -1341,7 +1355,7 @@ async function loadArchive() {
   $('#archlist').className = '';
   $('#archlist').innerHTML = list.map(s => {
     const members = Object.entries(s.scores);
-    return `<details class="item"><summary><b>Session ${s.id}</b>${s.song.feel ? ` · <i>${esc(s.song.feel)}</i>` : ''} · ${esc(s.song.genre)} · ${(240 / s.song.tempo).toFixed(1)} s bars · tonic ${(+s.song.tonic_hz).toFixed(0)} Hz · ${s.bars} bars ·
+    return `<details class="item"><summary><b>${s.name ? `“${esc(s.name)}”` : `Session ${s.id}`}</b>${s.name ? ` · session ${s.id}, named by ${esc(s.top)}` : s.top ? ` · waiting for ${esc(s.top)} to name it` : ''}${s.song.feel ? ` · <i>${esc(s.song.feel)}</i>` : ''} · ${esc(s.song.genre)} · ${(240 / s.song.tempo).toFixed(1)} s bars · tonic ${(+s.song.tonic_hz).toFixed(0)} Hz · ${s.bars} bars ·
       ${members.map(([m]) => esc(m)).join(', ') || 'nobody'} · ${s.tips} coins tipped · ${esc(s.reason)}</summary>
       ${s.sign ? `<p>“${esc(s.sign)}”</p>` : ''}
       <div class="scroll"><table><tr><th>Member</th><th>Sentiment</th><th>Score</th><th>Votes</th><th>Tips</th><th>Cues answered</th><th>Answered by others</th></tr>
