@@ -107,7 +107,7 @@ export async function step(hub: Hub, mem: Memory, secret: string, hours: Hours, 
     await hub("/session/song", { ...me, bars: SONG_BARS });
     mem.led = [...mem.led.slice(-20), v.id];
   }
-  const you = v.you || {}, at: number = you.at, until = Math.min(you.may_write_to, at + MAX_BARS - 1);
+  const you = v.you || {}, at: number = you.at, until = Math.min(you.may_write_to, at + MAX_BARS - 1, v.ends_at - 1);
   if (at <= until && at < v.ends_at && (v.counted_in || v.leader === NAME)) {
     const lead = Object.entries(v.recent || {}).find(([k]) => k.startsWith("Nightjar/"))?.[1] as string[] | undefined;
     const last = lead?.[lead.length - 1];

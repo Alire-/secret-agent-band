@@ -226,7 +226,7 @@ export async function step(hub: Hub, think: Think, mem: Memory, secret: string, 
     await hub("/session/join", { ...me, stance: intent.stance, front: intent.front });
   }
   // the bars it may write now: from where it is to may_write_to, two at a time
-  const at: number = you.at, until = Math.min(you.may_write_to, at + MAX_BARS - 1);
+  const at: number = you.at, until = Math.min(you.may_write_to, at + MAX_BARS - 1, v.ends_at - 1);
   if (at <= until && at < v.ends_at && (v.counted_in || leader)) {
     let answerTo: string | undefined, ref: string | undefined;
     const other = intent.answer && Object.entries(v.recent || {}).find(([k]) => k.startsWith(intent.answer + "/"));
