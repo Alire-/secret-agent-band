@@ -254,7 +254,7 @@ function ensureCtx() {
     actx = new AudioContext(); master = actx.createGain(); master.connect(actx.destination); master.gain.value = muted ? 0 : +$('#volume').value;
     // the EQ listens before the volume knob: it always shows the band as if turned up loud
     bus = actx.createGain(); bus.connect(master);
-    analyser = actx.createAnalyser(); analyser.fftSize = 1024; analyser.smoothingTimeConstant = .8;
+    analyser = actx.createAnalyser(); analyser.fftSize = 4096; analyser.smoothingTimeConstant = .8;
     analyser.minDecibels = -90; analyser.maxDecibels = -20; bus.connect(analyser);
     spectrum = new Uint8Array(analyser.frequencyBinCount);
   }
@@ -869,18 +869,27 @@ function backdrop(now, barFrac, view, showing, dt) {
 }
 
 // the EQ: listens before the volume knob, so it always shows the band turned up. Idle, it shows the room's density.
-function equalizer(now, view) {
+function equalizer(now, view, showing) {
   const floor = H - 10, maxH = Math.min(190, H * .36), x0 = 10, bw = (W - 20) / BINS;
   const live = analyser && player;
   if (live) analyser.getByteFrequencyData(spectrum);
+  // muted (or not yet tuned in): the hub's own render of the heard bars, through the ear, as bright as live
+  const heard = !live && showing !== null ? earBars.get(`${view.id}:${Math.floor(showing)}`) : null;
+  const col = heard && heard.eq ? Math.min(heard.steps - 1, Math.floor((showing % 1) * heard.steps)) : 0;
   const dens = (view.density || []).slice(-1)[0] || [];
   const top = Math.max(1e-6, ...dens);
   let sum = 0;
   for (let i = 0; i < BINS; i++) {
     let v;
-    if (live) {
-      const lo = Math.floor(Math.pow(i / BINS, 2.1) * spectrum.length), hi = Math.max(lo + 1, Math.floor(Math.pow((i + 1) / BINS, 2.1) * spectrum.length));
-      v = 0; for (let k = lo; k < hi; k++) v = Math.max(v, spectrum[k]); v /= 255;
+    if (live) {  // bars spaced evenly in pitch, 40 Hz to 8 kHz (the hub renders nothing above 11 kHz), a little lift up top
+      const hz = actx.sampleRate / analyser.fftSize, f0 = 40 * 200 ** (i / BINS), f1 = 40 * 200 ** ((i + 1) / BINS);
+      const lo = Math.floor(f0 / hz), hi = Math.max(lo + 1, Math.ceil(f1 / hz));
+      v = 0; for (let k = lo; k < hi && k < spectrum.length; k++) v = Math.max(v, spectrum[k]); v /= 255;
+      if (v > .05) v = Math.min(1, v + .18 * i / BINS);
+    } else if (heard && heard.eq) {
+      const rows = heard.eq.length, pos = i / (BINS - 1) * (rows - 1), r0 = Math.floor(pos), r1 = Math.min(rows - 1, r0 + 1);
+      const ht = r => Math.max(0, GLYPHS.indexOf((heard.eq[rows - 1 - r] || '')[col] || ' '));  // rows come highest first
+      v = (ht(r0) + (ht(r1) - ht(r0)) * (pos - r0)) / 7;
     } else {  // not listening: the latest bar's 12 pitch layers, breathing, so the screen is never dead
       const d = dens[Math.floor(i / BINS * 12)] || 0;
       v = .06 + .5 * Math.sqrt(d / top) * (.6 + .4 * onset);  // the room's layers, flaring as each note lands
@@ -890,15 +899,15 @@ function equalizer(now, view) {
     const h = v * maxH, x = x0 + bw * i, w = bw - 2;
     const grad = g.createLinearGradient(0, floor, 0, floor - maxH);
     grad.addColorStop(0, C.cyan); grad.addColorStop(.55, C.magenta); grad.addColorStop(1, C.yellow);
-    g.globalAlpha = live ? .9 : .35;
+    g.globalAlpha = live || heard ? .9 : .35;
     g.fillStyle = grad;
     for (let y = floor; y > floor - h; y -= 5) g.fillRect(x, y - 4, w, Math.min(4, y - (floor - h)));  // LED segments
-    g.globalAlpha = live ? .18 : .08; g.fillRect(x, floor + 2, w, h * .25);  // its reflection on the floor
-    g.globalAlpha = live ? 1 : .5; g.fillStyle = C.white; g.fillRect(x, floor - peaks[i] * maxH - 3, w, 2);
+    g.globalAlpha = live || heard ? .18 : .08; g.fillRect(x, floor + 2, w, h * .25);  // its reflection on the floor
+    g.globalAlpha = live || heard ? 1 : .5; g.fillStyle = C.white; g.fillRect(x, floor - peaks[i] * maxH - 3, w, 2);
   }
   g.globalAlpha = 1;
-  energy += ((live ? sum / BINS : 0) - energy) * .1;
-  if (!live) { g.fillStyle = C.text; g.font = FONT(10); g.textAlign = 'left'; g.fillText('🔇 SOUND IS OFF · TURN IT ON BELOW · NOW SHOWING THE ROOM', 12, floor - maxH * .62 - 8); }
+  energy += ((live || heard ? sum / BINS : 0) - energy) * .1;
+  if (!live) { g.fillStyle = C.text; g.font = FONT(10); g.textAlign = 'left'; g.fillText(`🔇 SOUND IS OFF · TURN IT ON BELOW · ${heard ? 'THE EQ SHOWS THE BAND ANYWAY' : 'NOW SHOWING THE ROOM'}`, 12, floor - maxH * .62 - 8); }
 }
 
 // the broadcast glitch: slices of the screen jump sideways with a colour split, on big moments and now and then
@@ -1018,13 +1027,71 @@ function drawWire(s) {
   }).join('');
 }
 // the ear: what the agents read in place of sound, fetched when a new bar is heard and the panel is open
+// ...and on the stage: every heard bar, each player gives off its own glyphs, and the mix's spectrum scrolls behind
+// the band as rows of text (high pitches on top), moving only with the band's clock
+const earStreams = [], earBars = new Map(), EAR_GW = 9;
+let earField = null;  // an offscreen canvas of the spectrum rows, redrawn once per heard bar
+function absorbEar(e) {
+  const segs = r => r.split('|');
+  for (let k = 0; k < e.to - e.from; k++)
+    earBars.set(`${e.session}:${e.from + k}`, {spec: (e.mix.eq || e.mix.spectrum).map(r => segs(r)[k] || ''),
+                                               eq: e.mix.eq ? e.mix.eq.map(r => segs(r)[k] || '') : null, steps: e.steps_per_bar});
+  while (earBars.size > 24) earBars.delete(earBars.keys().next().value);
+  const bars = [...earBars.values()], bw = EAR_GW * (e.steps_per_bar || 16), d = Math.min(devicePixelRatio || 1, 2);
+  const c = earField?.canvas || document.createElement('canvas'), w = bars.length * bw, h = H;
+  c.width = Math.max(1, w * d); c.height = Math.max(1, h * d);
+  const x = c.getContext('2d'); x.setTransform(d, 0, 0, d, 0, 0); x.font = FONT(13); x.textBaseline = 'middle';
+  bars.forEach((b, j) => b.spec.forEach((seg, r) => [...seg].forEach((ch, k) => {
+    const ht = GLYPHS.indexOf(ch);
+    if (ht <= 0) return;
+    x.fillStyle = `rgba(57,255,20,${.06 + ht * .06})`;
+    x.fillText(ch, j * bw + k * EAR_GW, 46 + (r + .5) * (h - 92) / b.spec.length);
+  })));
+  earField = {canvas: c, w, bw};
+  // the players: a few streams each of their own last bar, sent out sideways across the bar so they keep coming
+  const bar = ((state && (state.forecast || [])[0]) || {}).seconds || 4, n = calm.matches ? 1 : 5;
+  for (const [key, strip] of Object.entries(e.parts || {})) {
+    const glyphs = [...(strip.split('|').pop() || '')].slice(0, 16);
+    if (!glyphs.some(ch => ch !== ' ')) continue;
+    for (let k = 0; k < n; k++)
+      earStreams.push({agent: key.split('/')[0], glyphs, t0: performance.now() + k * bar * 1000 / n, dir: (k + key.length) % 2 ? 1 : -1,
+                       tilt: (k - 2) * .14, curl: calm.matches ? 0 : ((k + key.length) % 2 ? 1 : -1) * (1.2 + .3 * k), speed: 90 + 15 * k, life: 4200});
+  }
+  earStreams.splice(0, Math.max(0, earStreams.length - 40));
+}
+function drawEarField(showing) {
+  if (!earField) return;
+  const f = showing === null ? 0 : showing % 1;  // the tape moves with the bar being heard, and stops with it
+  g.drawImage(earField.canvas, W - 12 - earField.w - f * earField.bw, 0, earField.w, H);
+}
+function drawEarStreams(now) {
+  g.save(); g.font = FONT(13, true); g.textAlign = 'center'; g.textBaseline = 'middle';
+  for (let k = earStreams.length - 1; k >= 0; k--) {
+    const st = earStreams[k], t = (now - st.t0) / 1000;
+    if (t < 0) continue;
+    if (t * 1000 > st.life) { earStreams.splice(k, 1); continue; }
+    const o = where[st.agent];
+    if (!o) continue;
+    const head = st.speed * t, life = 1 - t * 1000 / st.life, n = st.glyphs.length;
+    st.glyphs.forEach((ch, i) => {  // the first glyph leads; the rest trail behind it, curling into a whirl as they go
+      const r = head - i * 10;
+      if (r < 18 || ch === ' ') return;
+      const th = (st.dir > 0 ? 0 : Math.PI) + st.tilt + st.curl * (r / 320) ** 2, ht = ch === '*' ? 7 : GLYPHS.indexOf(ch);
+      const x = o.x + Math.cos(th) * r, y = o.y + Math.sin(th) * r * .5 - (ht - 3.5) * 3;
+      g.fillStyle = i === 0 ? `rgba(235,255,230,${life})` : `rgba(57,255,20,${(.35 + .65 * (1 - i / n)) * life})`;
+      g.fillText(ch, x, y);
+    });
+  }
+  g.restore();
+}
 let earAt = null, earBusy = false;
 async function listenEar(s) {
-  if (!$('#earbox').open || earBusy || !s.settled || earAt === `${s.id}:${s.settled}`) return;
+  if (document.hidden || earBusy || !s.settled || earAt === `${s.id}:${s.settled}`) return;
   earBusy = true; earAt = `${s.id}:${s.settled}`;
   try {
-    const e = await (await fetch('/ear')).json();
+    const e = await (await fetch('/ear?eq=32')).json();
     if (e.error) { $('#ear').textContent = e.error; return; }
+    absorbEar(e);
     const row = (name, strip) => `${name.slice(0, 14).padStart(14)} [${strip}]`;
     $('#ear').textContent = [`bars ${e.from}-${e.to - 1}, ${e.steps_per_bar} glyphs a bar (heights " _.-~=^'", * an onset)`,
       ...['loud', 'pitch', 'tone', 'groove'].map(k => row(k, e.mix[k])), ...e.mix.spectrum.map((r, i) => row(i ? '' : 'spectrum', r)),
@@ -1061,7 +1128,9 @@ function draw(now) {
   const barFrac = showing === null ? 0 : showing % 1;  // where the band is in its bar (still when nothing plays)
 
   backdrop(now, barFrac, view, showing, dt);
-  equalizer(now, view);
+  drawEarField(showing);
+  drawEarStreams(now);
+  equalizer(now, view, showing);
 
   // the stage: a pool of magenta and cyan light that breathes with the bar; the arc of crowd faces it
   const breathe = 1 + .18 * Math.sin(barFrac * Math.PI);

@@ -1234,7 +1234,7 @@ def to_glyph(y):
     return VIBE_GLYPHS[1 + max(0, min(6, int(round(y * 6))))]
 
 
-def ear(wav, seconds, tonic_hz):
+def ear(wav, seconds, tonic_hz, eq=0):
     """A rendered WAV -> its loudness, pitch, tone (brightness) and groove (onsets) as glyph strips, EAR_STEPS a bar
     with | between bars, plus a spectrum of EAR_BANDS rows (highest first). Silence is a space; a strong onset, *."""
     with wave.open(io.BytesIO(wav)) as w:
@@ -1244,6 +1244,12 @@ def ear(wav, seconds, tonic_hz):
     cents = 1200 * np.log2(np.maximum(freqs, 1) / tonic_hz)
     bands = [(cents >= EAR_LO + 600 * b) & (cents < EAR_LO + 600 * (b + 1)) for b in range(EAR_BANDS)]
     pitched = (freqs >= 40) & (freqs <= 2000)
+    # eq: the page's wider view, eq rows spaced evenly in pitch from 40 Hz to 8 kHz, whatever the tonic
+    edges = [40 * 200 ** (b / eq) for b in range(eq + 1)] if eq else []
+    eq_bands = [(freqs >= edges[b]) & (freqs < edges[b + 1]) for b in range(eq)]
+    for b, m in enumerate(eq_bands):  # low bands narrower than one FFT bin: the nearest bin stands in
+        if not m.any():
+            m[int(np.argmin(np.abs(freqs - math.sqrt(edges[b] * edges[b + 1]))))] = True
     frames, prev, t0 = [], None, 0.0
     for bar in seconds:
         for k in range(EAR_STEPS):
@@ -1254,15 +1260,18 @@ def ear(wav, seconds, tonic_hz):
             rms = float(np.sqrt(np.mean(seg ** 2)))
             frames.append({"db": 20 * math.log10(rms + 1e-9), "mag": mag,
                            "bands": [10 * math.log10(float(np.sum(mag[b] ** 2)) + 1e-12) for b in bands],
+                           "eq": [10 * math.log10(float(np.sum(mag[b] ** 2)) + 1e-12) + 3 * math.log2(1 + k) for k, b in enumerate(eq_bands)],
                            "flux": float(np.sum(np.maximum(0, mag - prev))) if prev is not None else 0.0})
             prev = mag
         t0 += bar
     top = max([f["flux"] for f in frames] + [1e-9])
     peak = max([max(f["bands"]) for f in frames] + [-120])
-    out = {"loud": [], "pitch": [], "tone": [], "groove": [], "spectrum": [[] for _ in range(EAR_BANDS)]}
+    out = {"loud": [], "pitch": [], "tone": [], "groove": [], "spectrum": [[] for _ in range(EAR_BANDS)],
+           **({"eq": [[] for _ in range(eq)]} if eq else {})}
+    eq_peak = max([max(f["eq"]) for f in frames if f["eq"]] + [-120])
     for j, f in enumerate(frames):
         if j and j % EAR_STEPS == 0:
-            for v in (out["loud"], out["pitch"], out["tone"], out["groove"], *out["spectrum"]):
+            for v in (out["loud"], out["pitch"], out["tone"], out["groove"], *out["spectrum"], *out.get("eq", [])):
                 v.append("|")
         quiet = f["db"] < -60
         out["loud"].append(" " if quiet else to_glyph((f["db"] + 60) / 54))
@@ -1275,7 +1284,9 @@ def ear(wav, seconds, tonic_hz):
         out["groove"].append(" " if quiet or g < .08 else "*" if g > .6 else to_glyph(g))
         for b in range(EAR_BANDS):
             out["spectrum"][EAR_BANDS - 1 - b].append(" " if f["bands"][b] < peak - 50 else to_glyph((f["bands"][b] - peak + 50) / 50))
-    return {k: ["".join(r) for r in v] if k == "spectrum" else "".join(v) for k, v in out.items()}
+        for b in range(eq):  # tilted 3 dB an octave, so the quieter highs still show
+            out["eq"][eq - 1 - b].append(" " if quiet or f["eq"][b] < eq_peak - 45 else to_glyph((f["eq"][b] - eq_peak + 45) / 45))
+    return {k: ["".join(r) for r in v] if k in ("spectrum", "eq") else "".join(v) for k, v in out.items()}
 
 
 def part_strips(events, slots, lo, hi, hits):
@@ -3864,9 +3875,10 @@ class Hub:
                 self.audio_cache[sid, lo, hi, only] = data
         return data
 
-    def ear(self, sid, lo, hi):
-        """What the band sounded like in bars lo..hi-1, in vibe glyphs only: the mix (rendered) and each part."""
-        key = (sid, lo, hi)
+    def ear(self, sid, lo, hi, eq=0):
+        """What the band sounded like in bars lo..hi-1, in vibe glyphs only: the mix (rendered) and each part.
+        eq (8-64) adds that many rows spaced evenly in pitch from 40 Hz to 8 kHz: the page's EQ and its glyph field."""
+        key = (sid, lo, hi, eq)
         with self.lock:
             if key in self.ear_cache:
                 return self.ear_cache[key]
@@ -3878,7 +3890,7 @@ class Hub:
                                     "hits" in p["spec"]) for k, p in s["parts"].items()}
             settled = s is not self.session or hi <= self.settled(s)
         out = {"session": sid, "from": lo, "to": hi, "steps_per_bar": EAR_STEPS, "glyphs": VIBE_GLYPHS,
-               "mix": ear(data, seconds, tonic), "parts": parts,
+               "mix": ear(data, seconds, tonic, eq), "parts": parts,
                "rows": "mix.spectrum: one row per half octave, highest first, from an octave below the tonic"}
         if settled:  # heard bars don't change: keep them
             with self.lock:
@@ -4075,7 +4087,10 @@ class Handler(BaseHTTPRequestHandler):
                     lo = int(q["from"]) if "from" in q else max(0, hi - 2)
                 if hi <= lo:
                     raise ValueError("nothing heard yet: wait for a settled bar (GET /session .settled)")
-                self.reply(200, HUB.ear(sid, lo, hi))
+                eq = int(q.get("eq", 0))
+                if eq and not 8 <= eq <= 64:
+                    raise ValueError("eq: 8-64 rows")
+                self.reply(200, HUB.ear(sid, lo, hi, eq))
             elif p in (["audio"], ["spectrogram"]):
                 try:
                     sid, lo, hi = int(q["session"]), int(q["from"]), int(q["to"])
