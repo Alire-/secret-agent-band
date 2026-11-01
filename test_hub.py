@@ -889,6 +889,47 @@ class HubTest(unittest.TestCase):
             self.assertIn("As a guest you can already listen", str(e.exception))
         hub.like({**agent("Moss"), "session": sid, "call": c})  # an admitted agent likes the guest's call
 
+    def test_chords_of_your_own_in_books_genres_shorthand_and_instruments(self):
+        hub = self.hub
+        self.admit("Wren", "Moss")
+        g = {**H.DRIFT, "name": "drift"}
+        harp = {"partials": [[1, 1]], "name": "harp", "chord": False}
+        ev = H.parse_part(["s0:house.glass . s3:house.rub . :house.hollow . . ."], harp, g)
+        self.assertEqual([round(e[2], 1) for e in ev[:3]], [0, 386.3, 702.0])  # glass on s0
+        rub = [e[2] for e in ev if e[0] == 2]
+        self.assertEqual(len(rub), 4)
+        self.assertAlmostEqual(rub[1] - rub[0], 48)  # a beating cluster on s3
+        for bad in ("s0:nope", "s0:house.nope", "s0:house.glass&s1:house.glass&s2:house.rub&s3:house.rub"):
+            with self.assertRaises(ValueError):
+                H.parse_part([bad], harp, g)
+        with self.assertRaises(ValueError):  # drums don't play chords
+            H.parse_part(["k:house.glass"], H.LOOP_VOICES["drums"], g)
+        # a book of your own: lists and formulas, microtonal as you like
+        book = hub.new_entry({**agent("Wren"), "name": "wren-air", "about": "thin and bitter",
+                              "chords": {"bitter": [0, 33, 1131], "harm": {"count": 4, "cents": "cents(i + 1)"}}}, hub.chordbooks, H.make_chordbook)
+        self.assertEqual(book["chords"]["harm"], [0, 1200, 1901.96, 2400])
+        for bad in ({"name": "Has Caps", "chords": {"x": [0]}}, {"name": "ok", "chords": {"x": [0, 9999]}},
+                    {"name": "ok2", "chords": {}}, {"name": "ok3", "chords": {"x": {"count": 3, "cents": "import os"}}}):
+            with self.assertRaises(ValueError):
+                hub.new_entry({**agent("Wren"), **bad}, hub.chordbooks, H.make_chordbook)
+        self.assertEqual(len(H.parse_part(["s2:wren-air.bitter"], harp, g)), 3)
+        # a genre's own chords, by bare name
+        gen = H.make_genre({"scale": {"a": 0, "b": 350}, "form": ["a"], "chord": [], "chords": {"wide": [0, 1650]}})
+        self.assertEqual([e[2] for e in H.parse_part(["b:wide"], harp, {**gen, "name": "x"})], [350, 2000])
+        # an instrument with its own voicing sounds it under every note
+        pad = H.make_instrument({"partials": [[1, 1]], "chord": "wren-air.bitter"})
+        self.assertEqual((pad["chord"], H.voicing(pad, [0, 400])), ([0, 33, 1131], [0, 33, 1131]))
+        self.assertEqual(H.voicing(H.make_instrument({"partials": [[1, 1]], "chord": True}), [0, 400]), [0, 400])
+        self.assertEqual(H.voicing(H.make_instrument({"partials": [[1, 1]]}), [0, 400]), [0])
+        # through the hub: played live, heard in the render
+        hub.join({**agent("Moss"), "instruments": ["harp"], "stance": "chords"})
+        hub.song({**agent("Moss"), "genre": "drift", "bars": 8})
+        hub.play({**agent("Moss"), "bars": "s0:house.otonal - - - s5:house.smear - - - . . . . :house.dusk - - -"})
+        self.assertTrue(hub.ear(hub.session["id"], 0, 1)["mix"]["loud"].strip(" |"))
+        self.assertIn("house", {b["name"] for b in hub.chordbooks.values()})
+        hub.snapshot()
+        self.assertIn("wren-air", Hub(**self.paths).chordbooks)
+
     def test_the_top_performer_names_the_song(self):
         hub = self.hub
         self.admit("Wren", "Moss", "Fen")

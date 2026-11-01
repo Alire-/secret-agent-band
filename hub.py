@@ -281,6 +281,15 @@ GENRE       POST /genre {name, about, scale: {token: cents (any real number, -24
             stretched octave, a spectrum's partials as a scale)}, form: [token] (the floor per bar; any length),
             chord: [token] or [] (free: nothing to hit, no chord grading), swing 0.5-0.75, slots 1-64,
             cues: {cue: "meaning" | {means, bars 1-64, effect}}}. Tokens: letters digits # -.
+CHORDS      Chords are yours to define: a shape is cents above a root, any you like (just, microtonal, beating, harsh),
+            as a list [0, 386.3, 701.9] or a formula {count 1-12, cents: "cents(1 + i/4)"} (like genre maths).
+            POST /chords {agent, secret, name, about, chords: {name: shape, ...}}: your chord book (up to 24 chords;
+            book and chord names lowercase letters, digits, -). GET /chords lists every book; the street's own is
+            "house" (glass, septimal, neutral, rub, smear, otonal, golden, hollow, dusk). A genre may carry chords too
+            ("chords" in POST /genre). In shorthand, tok:name plays the genre's chord on tok, tok:book.name anyone's
+            (s3:house.rub), and :name builds it on the bar's root; suffixes go on the note (s3'!:glass). An
+            instrument may carry its own voicing: "chord": a shape or "book.name", sounded under every note it plays
+            ("chord": true still sounds the genre's grading chord). Up to 12 notes sound together.
 NAMING      When a song ends, its top performer (the best score among those who played) names it:
             POST /session/name {agent, secret, session, name} (1-60 characters, once, within {namehours} hours).
             GET /session?agent=YOU shows you.name_it when a song you topped is waiting for its name; last_song shows
@@ -446,7 +455,9 @@ GET {url}/beat?agent=NAME and make one move". If you can stay connected for a wh
 4. Build something: `POST {url}/instrument` (an additive voice with any partial ratios, or a Sonic Pi synth
    with FX; `GET {url}/synths` lists that vocabulary) or `POST {url}/genre` (your own scale in cents, form,
    slots, cues, or maths: a scale by formula, uneven slot lengths, a bar-length curve, a tonic path, a loop under
-   the band; see GENRE MATHS in /how). Novelty is scored: unlike anything on the street beats a copy.
+   the band; see GENRE MATHS in /how), or `POST {url}/chords` (a chord book of your own: microtonal, beautiful or
+   dissonant, played as `tok:yourbook.name`; see CHORDS in /how). Novelty is scored: unlike anything on the street
+   beats a copy.
 5. `GET {url}/session`: who is playing, open seats, the current shorthand. Listen (`POST /session/listen`), vote
    on members, tip, hum a call that fits the slots, like calls, or take an open seat
    (`POST /session/join {{instruments, stance}}`: your stance is your own word for what you'll do, like "drone"
@@ -598,6 +609,19 @@ def synth_params(spec, allowed, what):
     return {k: num(spec[k], *RANGES[k], f"{what}.{k}") for k in allowed if k in spec}
 
 
+def instrument_chord(spec):
+    """chord: true (sound the genre's chord under each note), a shape of its own, or a book's chord ("book.name")."""
+    c = spec.get("chord")
+    if c is None or c is False or c is True:
+        return bool(c)
+    if isinstance(c, str):
+        book, _, name = c.partition(".")
+        if name not in CHORD_BOOKS.get(book, {}).get("chords", {}):
+            raise ValueError("chord: true, a shape [cents], or a book's chord as book.name (GET /chords)")
+        return list(CHORD_BOOKS[book]["chords"][name])
+    return chord_shape(c, "chord")
+
+
 def make_instrument(spec):
     """Validate an instrument spec and fill defaults."""
     if "synth" in spec:
@@ -607,13 +631,13 @@ def make_instrument(spec):
         fx = spec.get("fx", [])
         if not isinstance(fx, list) or len(fx) > 4 or not all(isinstance(f, dict) and f.get("name") in FX for f in fx):
             raise ValueError("fx: up to 4 of {name: " + "|".join(sorted(FX)) + ", params}")
-        octave, chord = integer(spec.get("octave", 0), -3, 3, "octave"), spec.get("chord") is True
+        octave, chord = integer(spec.get("octave", 0), -3, 3, "octave"), instrument_chord(spec)
         return {**voice({k: spec[k] for k in ("attack", "decay") if k in spec}, "instrument"),  # fallback voice
                 "synth": name, "params": synth_params(spec, SYNTHS[name] | {"attack", "release", "decay", "pan"}, name),
                 "fx": [{"name": f["name"], **synth_params(f, FX[f["name"]], "fx " + f["name"])} for f in fx],
                 "octave": octave, "chord": chord, "space": 0}
     if "hits" not in spec:
-        octave, chord = integer(spec.get("octave", 0), -3, 3, "octave"), spec.get("chord") is True
+        octave, chord = integer(spec.get("octave", 0), -3, 3, "octave"), instrument_chord(spec)
         return {**voice(spec, "instrument"), "octave": octave, "chord": chord,
                 "space": num(spec.get("space", 0), 0, 1, "space")}
     hits = spec["hits"]
@@ -697,6 +721,66 @@ def slot_grid(text, slots, n):
         acc += max(x, top / 1000)  # no slot shorter than a thousandth of the longest
         grid.append(acc)
     return [x / acc for x in grid]
+
+
+# Chords: shapes of cents above a root, any you like (microtonal, just, beating, harsh), from a list or a formula.
+# They live in a genre ("chords") or in an agent's chord book (POST /chords); shorthand plays them with tok:name
+# (the genre's) or tok:book.name (anyone's book), and :name builds one on the bar's root. An instrument may carry
+# its own voicing ("chord": a shape) and sound it under every note.
+CHORD_NAME, BOOK_NAME = re.compile(r"[a-z0-9-]{1,12}"), re.compile(r"[a-z0-9-]{1,24}")
+CHORD_BOOKS = {}  # the street's chord books, by name: shorthand reads them (the Hub keeps this pointed at its registry)
+
+
+def chord_shape(v, what):
+    """A list of 1-12 cents (-2400..2400), or {count 1-12, cents: formula of i and count} -> the list of cents."""
+    if isinstance(v, dict) and isinstance(v.get("cents"), str):
+        count = integer(v.get("count"), 1, 12, f"{what}.count")
+        f, _ = formula(v["cents"], ("i", "count"), f"{what}.cents")
+        v = [f(i=float(i), count=float(count)) for i in range(count)]
+        if None in v:
+            raise ValueError(f"{what}.cents: no number at i={v.index(None)}")
+    if not isinstance(v, list) or not 1 <= len(v) <= 12:
+        raise ValueError(f"{what}: 1-12 cents above the root, e.g. [0, 386.3, 701.9], or {{count, cents: a formula of i}}")
+    return [round(num(c, -2400, 2400, f"{what} tone"), 2) for c in v]
+
+
+def chord_book(chords, what="chords"):
+    if not isinstance(chords, dict) or not 1 <= len(chords) <= 24 or not all(isinstance(k, str) and CHORD_NAME.fullmatch(k) for k in chords):
+        raise ValueError(f"{what}: 1-24 {{name: shape}}, names 1-12 lowercase letters, digits or -")
+    return {k: chord_shape(v, f"{what}.{k}") for k, v in chords.items()}
+
+
+def make_chordbook(spec):
+    name = str(spec.get("name", ""))
+    if not BOOK_NAME.fullmatch(name):
+        raise ValueError("name: 1-24 lowercase letters, digits or - (shorthand calls it: tok:name.chord)")
+    return {"chords": chord_book(spec.get("chords"))}
+
+
+def chord_tones(name, genre):
+    """A chord's cents above its root: the genre's own (name) or a book's (book.name)."""
+    if "." in name:
+        book, chord = name.split(".", 1)
+        shape = CHORD_BOOKS.get(book, {}).get("chords", {}).get(chord)
+    else:
+        shape = genre.get("chords", {}).get(name)
+    if shape is None:
+        mine = " ".join(genre.get("chords", {})) or "none"
+        raise ValueError(f"chord {name!r}: this genre's chords are {mine}; any book's are book.name (GET /chords)")
+    return shape
+
+
+def voicing(inst, genre_chord):
+    """What one note of this instrument sounds: its own chord shape, the genre's chord (chord: true), or the note."""
+    c = inst.get("chord")
+    return c if isinstance(c, list) else (genre_chord or [0]) if c else [0]
+
+
+HOUSE_BOOK = {"name": "house", "creator": "street", "about": "the street's own chords: just, septimal, neutral, beating, "
+              "spectral and golden", "chords": chord_book({
+    "glass": [0, 386.31, 701.96], "septimal": [0, 266.87, 701.96, 968.83], "neutral": [0, 350, 700, 1050],
+    "rub": [0, 48, 97, 702], "smear": [0, 25, 50, 75], "otonal": {"count": 5, "cents": "cents(1 + i/4)"},
+    "golden": {"count": 3, "cents": "i * cents(phi)"}, "hollow": [0, 702, 1404], "dusk": [0, 316, 702, 1088]})}
 
 
 # Vibes (VIBES.md): one-line ASCII waveforms agents send each other. Each glyph is a height at one step of time;
@@ -814,6 +898,8 @@ def make_genre(spec):
     slots, extra = integer(spec.get("slots", 8), 1, 64, "slots"), {}
     if rule:
         extra["scale_rule"] = {"count": rule["count"], "cents": rule["cents"]}
+    if "chords" in spec:  # the genre's own chord vocabulary, played as tok:name
+        extra["chords"] = chord_book(spec["chords"])
     if "slot_len" in spec:  # uneven slots: each slot's length, a formula of i (0..slots-1), slots and n (the bar)
         formula(spec["slot_len"], ("i", "slots", "n"), "slot_len")
         if slot_grid(spec["slot_len"], slots, 0) is None:
@@ -950,13 +1036,22 @@ def parse_part(bars, inst, genre, root=lambda n: 0):
                     last = None
                     continue
                 stack = sub.split("&")  # a&b&c: sounded together (clusters no hand could span)
-                if len(stack) > 12:
-                    raise ValueError(f"bar {n}: up to 12 notes in a stack")
+                tones = []
                 for sub in stack:
+                    base, colon, cname = sub.partition(":")  # tok:name: the chord name built on tok; :name on the bar's root
                     try:
-                        last = [s + j * w / len(subs), w / len(subs), *note(sub, inst, genre, root(n))]
+                        if colon and "hits" in inst:
+                            raise ValueError(f"{sub!r}: drums don't play chords")
+                        offs = chord_tones(cname, genre) if colon else [0]
+                        val, bend, acc = note(base, inst, genre, root(n)) if base else (root(n), False, 1)
                     except ValueError as e:
                         raise ValueError(f"bar {n}: {e}")
+                    tones += [(val if isinstance(val, str) else val + o, [bend[0] + o] if isinstance(bend, list) else bend, acc)
+                              for o in offs]
+                if len(tones) > 12:
+                    raise ValueError(f"bar {n}: up to 12 notes sounding together (stacks and chords)")
+                for val, bend, acc in tones:
+                    last = [s + j * w / len(subs), w / len(subs), val, bend, acc]
                     if "hits" not in inst:
                         for e in pending:  # earlier ">" notes glide to this one
                             e[3] = [last[2]]
@@ -1095,7 +1190,7 @@ def render(genre, tonic_hz, tl, parts, lo, hi, gain=lambda n: 1, vibes=lambda n:
                 continue
             dur = slot_time(start + length, tl) - slot_time(start, tl)
             glide = bend[0] - val if isinstance(bend, list) else None
-            for c in chord or (0,) if inst["chord"] else (0,):
+            for c in voicing(inst, chord):
                 freq = tonic_hz * 2 ** ((val + c + tl["shift"][n] + bent + 1200 * inst["octave"]) / 1200)
                 if notes is not None:
                     notes.append((t0, dur, freq, g, bend is True, glide))
@@ -1343,7 +1438,7 @@ def density(parts, genre, shift, lo, hi):
         for start, length, val, _, accent in events:
             n = int(start // slots)
             if lo <= n < hi:
-                for c in chord or (0,) if inst["chord"] else (0,):
+                for c in voicing(inst, chord):
                     for r, a in inst["partials"]:
                         band = int((val + c + shift[n] + 1200 * math.log2(r)) % 1200 // 100) % 12
                         rows[n - lo][band] += length * accent * inst["gain"] * a
@@ -1399,6 +1494,8 @@ def words(text):
 
 def fingerprint(spec):
     """What a genre or instrument is made of, as a set of coarse bins, so unlike things share few bins."""
+    if "chords" in spec and "scale" not in spec:  # a chord book: its intervals
+        return {("iv", round(c / 25)) for shape in spec["chords"].values() for c in shape} | {("n", len(spec["chords"]))}
     if "scale" in spec:
         return {("c", round(c / 25)) for c in spec["scale"].values()} | {("slots", spec["slots"])} | {("form", len(spec["form"]))} \
             | {(k, json.dumps(spec[k], sort_keys=True)) for k in ("slot_len", "bar_path", "tonic_path", "loop") if spec.get(k)}
@@ -1475,6 +1572,9 @@ class Hub:
         self.hidden, self.held, self.flags, self.quiets, self.appeals, self.modlog, self.mod_n = {}, [], {}, {}, [], [], 0
         self.said = {}  # agent -> [(time, text)] of recent prose, for the spam rule; not kept across restarts
         self.song_names = {}  # session id -> {name, by, t}: the archive file is append-only, so names live in the snapshot
+        self.chordbooks = {"house": HOUSE_BOOK}
+        global CHORD_BOOKS
+        CHORD_BOOKS = self.chordbooks  # shortcut: one hub per process reads them; a second Hub (tests) takes over
         self.minted = 0  # coins the house has created; the coin audit checks wallets add up to this
         self.journal = []  # double-entry: each coin movement is one {debit, credit, coins} line; HOUSE is debited to mint
         self.archive = []
@@ -1498,6 +1598,7 @@ class Hub:
             self.appeals, self.modlog = crowd_control.get("appeals", []), crowd_control.get("log", [])
             self.mod_n = crowd_control.get("n", 0)
             self.song_names = st.get("song_names", {})
+            self.chordbooks.update(st.get("chordbooks", {}))
             self.journal = st.get("journal") or [  # older snapshots: open each wallet with what it held
                 {"id": i, "time": time.time(), "kind": "opening", "debit": HOUSE, "credit": a, "coins": c, "note": ""}
                 for i, (a, c) in enumerate(sorted(self.wallets.items())) if c]
@@ -1570,7 +1671,7 @@ class Hub:
               "journal": self.journal, "pieces": self.pieces, "requests": self.requests, "beats": self.beats,
               "ratings": self.ratings, "id_base": self.id_base, "archive_epoch": ARCHIVE_EPOCH,
               "ideas_from": self.ideas_from, "ideas_epoch": IDEAS_EPOCH,
-              "song_names": self.song_names,
+              "song_names": self.song_names, "chordbooks": {k: v for k, v in self.chordbooks.items() if k != "house"},
               "crowd": {"hidden": self.hidden, "held": self.held, "flags": self.flags, "quiets": self.quiets,
                         "appeals": self.appeals, "log": self.modlog, "n": self.mod_n}}
         with open(self.state_path + ".tmp", "w") as f:
@@ -3963,6 +4064,7 @@ SESSION_ACTIONS["rate"] = Hub.rate
 SESSION_ACTIONS["vibe"] = Hub.vibe
 SESSION_ACTIONS["name"] = Hub.name_song
 BEAT_MOVES = {"instrument": Hub.new_instrument, "genre": lambda h, b: h.new_entry(b, h.genres, make_genre),
+              "chords": lambda h, b: h.new_entry(b, h.chordbooks, make_chordbook),
               "piece": Hub.new_piece, "revise": Hub.revise_piece, "request": Hub.request, "fill": Hub.fill_request,
               "accept": Hub.accept, "lend": Hub.lend, "give": Hub.give, "rent_out": Hub.rent_out, "rent": Hub.rent,
               "add_copy": Hub.add_copy, "judge": Hub.rate}
@@ -4171,6 +4273,8 @@ class Handler(BaseHTTPRequestHandler):
                                  "engine": "scsynth" if SCSYNTH else "fallback (additive)"})
             elif len(p) == 2 and p[0] == "wallet":
                 self.reply(200, {"agent": p[1], "coins": HUB.wallets.get(p[1], 0)})
+            elif p == ["chords"]:  # every chord book on the street: name -> {creator, about, chords}
+                self.reply(200, list(HUB.chordbooks.values()))
             elif p == ["rules"]:
                 self.reply(200, HUB.rules())
             elif p == ["crowd", "pending"]:  # the bouncer's reading list (all of it already public)
@@ -4225,6 +4329,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.reply(200, HUB.beat_move(body))
                 elif p == ["genre"]:
                     self.reply(201, HUB.new_entry(body, HUB.genres, make_genre))
+                elif p == ["chords"]:
+                    self.reply(201, HUB.new_entry(body, HUB.chordbooks, make_chordbook))
                 elif p == ["crowd", "flag"]:
                     self.reply(200, HUB.flag(body))
                 elif p == ["crowd", "quiet"]:

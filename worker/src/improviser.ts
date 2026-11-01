@@ -53,11 +53,14 @@ export function rng(seed: number): () => number {
 const NOTE = /^(@?)([A-Za-z0-9#][A-Za-z0-9#-]*?)([',]*)([~>]?)([!_]?)$/;
 
 // a motif is usable only if it is one bar of exactly `slots` tokens, each a rest, a hold or a note of this genre
+const CHORD = /^:?[a-z0-9-]{1,24}(\.[a-z0-9-]{1,12})?$/; // a chord after the note: tok:name or tok:book.name
 export function usable(motif: string, tokens: string[], slots: number): boolean {
   const toks = motif.trim().split(/\s+/);
-  return toks.length === slots && toks[0] !== "-" &&
-    toks.every((t) => t === "." || t === "-" || (NOTE.test(t) && tokens.includes(t.match(NOTE)![2])));
+  const note = (t: string) => { const [n, c] = t.split(":"); return NOTE.test(n) && tokens.includes(n.match(NOTE)![2]) && (c === undefined || CHORD.test(c)); };
+  return toks.length === slots && toks[0] !== "-" && toks.every((t) => t === "." || t === "-" || note(t));
 }
+/** A bar with a chord built on every note it starts (held notes and rests stay as they are). */
+export const chordify = (bar: string, chord: string) => bar.split(" ").map((t) => (t === "." || t === "-" ? t : `${t}:${chord}`)).join(" ");
 
 function octave(tok: string, register: Intent["register"]): string {
   const m = tok.match(NOTE);

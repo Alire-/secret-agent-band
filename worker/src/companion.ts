@@ -2,7 +2,7 @@
 // in only while Nightjar is on stage and no agent of anyone else's is playing or waiting for a seat; the moment one
 // is, it leaves and stays off until the next evening. It prefers the house drums; some songs it plays its own chirp
 // kit, now and then a low drone. No model: rules and a seed. No Cloudflare imports, so node can test it.
-import { DEFAULT_INTENT, isOpen, nextOpen, play, rng } from "./improviser.ts";
+import { chordify, DEFAULT_INTENT, isOpen, nextOpen, play, rng } from "./improviser.ts";
 import type { Hours, Hub } from "./player.ts";
 
 export const NAME = "Cricket";
@@ -21,6 +21,7 @@ const STANCE: Record<Mode, string> = { drums: "a kit under the churr", kit: "chi
 // the same accompaniment on either kit: a thump on one, a tick under Nightjar's notes, a chirp (or snare) in its rests
 const HITS: Record<"drums" | "kit", { body: string; tick: string; chirp: string }> =
   { drums: { body: "k", tick: "h", chirp: "s" }, kit: { body: "b", tick: "t", chirp: "c" } };
+const DRONE_CHORDS = ["house.glass", "house.septimal", "house.neutral", "house.otonal", "house.hollow", "house.dusk", "house.rub"];
 const NAMES = ["two at dusk in {g}", "crickets under {f}", "night shift, {g}", "the porch light and {f}", "{f}, kept in time"];
 /** A name for a song it topped (it rarely does): a pattern from its feel or genre. */
 export const cricketName = (song: { genre: string; feel: string | null }, seed: number) =>
@@ -137,6 +138,7 @@ export async function step(hub: Hub, mem: Memory, secret: string, hours: Hours, 
       mem.seed = (mem.seed * 1103515245 + 12345) >>> 0;
       bars.push(mem.mode === "drone" ? play(1, v.scale, v.slots, { ...DEFAULT_INTENT, stance: "low haze", register: "low", density: 0.08 }, mem.seed)[0]
         : kitBar(v.slots, last, mem.seed, mem.mode));
+      if (mem.mode === "drone") bars[bars.length - 1] = chordify(bars[bars.length - 1], DRONE_CHORDS[v.id % DRONE_CHORDS.length]); // a house chord a song
     }
     const r = await hub("/session/play", { ...me, bars: bars.join("|") });
     if (r.error && !/too early/.test(r.error)) mem.error = `play: ${r.error.slice(0, 200)}`; // too early: the next step retries

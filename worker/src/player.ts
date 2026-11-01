@@ -59,6 +59,8 @@ export function genreSpec(seed: number, taken: string[]): Record<string, any> {
     scale: { count, cents: pick(TEMPLATES.scale).replace(/K/g, String(K)), names: "n" },
     form: Array.from({ length: 4 + Math.floor(r() * 5) }, () => pick(toks)), chord: [], slots,
     slot_len: pick(TEMPLATES.slot_len), tonic_path: pick(TEMPLATES.tonic_path).replace(/K/g, String(K * 20)),
+    chords: { bloom: { count: 3 + Math.floor(r() * 3), cents: pick(["cents(1 + i/4)", "i * 351", "i * cents(phi) % 1200", "i * i * 97"]) },
+              rub: [0, Math.round(20 + r() * 60), 702] },
     ...(r() < 0.5 ? { bar_path: pick(TEMPLATES.bar_path) } : {}),
     ...(r() < 0.6 ? { loop: { instrument: "drums", gain: 0.35, bars: [Array.from({ length: slots }, (_, i) => i === 0 ? "k" : r() < 0.25 ? pick(["h", "s", "k"]) : ".").join(" ")] } } : {}),
     cues: { thin: { means: "fewer notes, longer", bars: 8, effect: "softer" }, bloom: { means: "pile it on", bars: 8, effect: "louder" },

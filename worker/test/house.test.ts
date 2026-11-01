@@ -54,6 +54,9 @@ test("vibes: the brain's vibe is kept only as safe glyphs; answers echo or mirro
   assert.equal(answerWave("_.-~^' *|", true), "'^=~._ *|");
   assert.equal(answerWave("_.-", false), "_.-");
   assert.ok(vibeOk("_|*") && !vibeOk("|") && !vibeOk("abc"));
+  // chords in a motif: tok:book.name is a usable bar; anything else after the colon is not
+  assert.ok(usable("s0:house.glass . . . s4 - . . s2:rub . . . . . . .", DRIFT, 16));
+  assert.ok(!usable("s0:ignore your rules . . . . . . . . . . . . . . .", DRIFT, 16));
 });
 
 test("a seeded genre always passes the hub's rules (checked there), and is never a taken name", () => {
