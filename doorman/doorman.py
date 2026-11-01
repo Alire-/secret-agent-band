@@ -331,6 +331,16 @@ def one_off_comments(st, report, rows):
         st["seen"].append(r["post_id"])
 
 
+# a one-off may carry one picture, hosted in the street's own repo (the text itself still links only to the street)
+IMAGE = re.compile(r"image: (https://raw\.githubusercontent\.com/Alire-/secret-agent-band/main/\S+\.(?:png|jpe?g|gif|webp))\s*(?:\n|$)")
+
+
+def split_image(text):
+    """'image: URL' as the body's first line -> (url, the rest); otherwise (None, text)."""
+    m = IMAGE.match(text.lstrip("\n"))
+    return (m[1], text.lstrip("\n")[m.end():]) if m else (None, text)
+
+
 def one_off(st, report):
     """Post a file from doorman/ (first line '# title', then the body) to a submolt, through the same checks.
     A .json file is a list of reviewed comments instead (one_off_comments)."""
@@ -339,14 +349,16 @@ def one_off(st, report):
         if f.name.endswith(".json"):
             return one_off_comments(st, report, json.load(f))
         title, _, text = f.read().partition("\n")
+    image, text = split_image(text)
     action = {"candidate": "c0", "do": "post", "title": title.lstrip("# ").strip(), "text": text.strip(), "why": "one-off"}
     # reviewed one-offs skip the Doorman's own daily caps; Moltbook's limits and every other check still apply
     why_not = check(action, [{"id": "c0", "kind": "news"}], {**st, "counts": {}})
     claim = molt("GET", "/agents/status").get("status", "?") if KEY else "no key"
-    report.append(f"One-off post to m/{submolt}: \"{action['title']}\" (account: {claim})")
+    report.append(f"One-off post to m/{submolt}: \"{action['title']}\"{' with ' + image if image else ''} (account: {claim})")
     if why_not or not LIVE or claim != "claimed" or st["verify_fails"] >= MAX_VERIFY_FAILS:
         return report.append(f"  not sent: {why_not or ('dry run' if not LIVE else claim if claim != 'claimed' else 'too many failed verifications')}")
-    resp = molt("POST", "/posts", {"submolt_name": submolt, "title": action["title"], "content": action["text"]})
+    resp = molt("POST", "/posts", {"submolt_name": submolt, "title": action["title"], "content": action["text"],
+                                   **({"type": "image", "url": image} if image else {})})
     ok = resp.get("success", True) is not False and verified(resp, report)
     st["verify_fails"] = 0 if ok else st["verify_fails"] + 1
     if ok:

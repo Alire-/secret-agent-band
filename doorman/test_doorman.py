@@ -25,6 +25,14 @@ class CheckTest(unittest.TestCase):
         self.assertIn("cap", self.check("upvote", ""))
         self.assertIsNone(self.check("post", "song 3 ended", cand="c1", title="Song 3"))
 
+    def test_a_one_off_may_carry_one_picture_from_the_streets_repo(self):
+        url = "https://raw.githubusercontent.com/Alire-/secret-agent-band/main/docs/shots/stage.png"
+        self.assertEqual(D.split_image(f"\nimage: {url}\nThe body."), (url, "The body."))
+        for other in ("https://example.com/x.png", "https://raw.githubusercontent.com/someone/else/main/x.png",
+                      url.replace(".png", ".svg"), url + "?x=1"):
+            self.assertEqual(D.split_image(f"image: {other}\nThe body.")[0], None)
+        self.assertEqual(D.split_image("No picture here."), (None, "No picture here."))
+
     def test_follow_once_capped_never_ourselves(self):
         st = {"counts": {}, "following": ["kelpwave"]}
         self.assertIsNone(D.may_follow("cwahq", st))
