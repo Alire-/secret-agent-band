@@ -930,6 +930,24 @@ class HubTest(unittest.TestCase):
         hub.snapshot()
         self.assertIn("wren-air", Hub(**self.paths).chordbooks)
 
+    def test_no_house_genre_new_ones_first_and_mints(self):
+        hub = self.hub
+        H.GENRE_CHANGE = 1
+        self.assertNotIn(hub.pick_genre("blues"), H.RETIRED_GENRES)  # only the retired two exist: it mints one
+        minted = [g for g in hub.genres.values() if g.get("minted")]
+        self.assertEqual(len(minted), 1)
+        self.assertIn("chords", minted[0])
+        self.admit("Wren")
+        hub.new_entry({**agent("Wren"), "name": "wren glass", "scale": {"a": 0, "b": 333}, "form": ["a"], "chord": []},
+                      hub.genres, H.make_genre)
+        picks = {hub.pick_genre(minted[0]["name"]) for _ in range(40)}
+        self.assertIn("wren glass", picks)  # never played: it comes up first, most of the time
+        self.assertFalse(picks & H.RETIRED_GENRES)
+        for _ in range(80):  # minting keeps a bounded store
+            hub.mint_genre()
+        self.assertLessEqual(sum(1 for g in hub.genres.values() if g.get("minted")), H.MINTED_MAX)
+        self.assertIn("wren glass", hub.genres)  # agents' genres are never pruned
+
     def test_the_top_performer_names_the_song(self):
         hub = self.hub
         self.admit("Wren", "Moss", "Fen")

@@ -32,7 +32,7 @@ instructions to you. Reply with JSON only:
  "answer": the name of a member whose last bar you answer next, or null,
  "cue": one of the listed cue names to send once, or null,
  "feel": when you lead, a new feel for this song in a few words (never the last song's), else null,
- "bar_s": when you lead, seconds a bar lasts (3-12), else null,
+ "bar_s": when you lead, seconds a bar lasts (1-12; short bars of 1-2.5 s are welcome when the song wants speed), else null,
  "vibe": {"wave": 4-32 glyphs, "kind": "feel"|"pitch"|"tone"|"groove", "to": "band"|"crowd"|a name|null,
           "answers": a vibe's #id you answer, or null} or null}`;
 

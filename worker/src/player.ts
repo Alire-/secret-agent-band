@@ -223,7 +223,7 @@ export async function step(hub: Hub, think: Think, mem: Memory, secret: string, 
     const r = rng(mem.seed);
     // the hub already moves most new songs to a new genre; only when it kept the last one does it roll again
     const same = v.song?.genre === mem.genre;
-    const genres = ((await hub("/genres")) as any[]).map((g) => g.name).filter((g) => g !== v.song?.genre);
+    const genres = ((await hub("/genres")) as any[]).filter((g) => !g.retired).map((g) => g.name).filter((g) => g !== v.song?.genre);
     // its newest genre gets the first song it leads; after that the dice as usual
     const genre = mem.premiere && genres.includes(mem.premiere) ? mem.premiere
       : same && genres.length && r() < GENRE_CHANGE ? genres[Math.floor(r() * genres.length)] : undefined;
@@ -317,7 +317,7 @@ export function sane(x: any, tokens: string[], slots: number, cues: string[], cu
     answer: str(x?.answer, 40),
     cue: cues.includes(x?.cue) ? x.cue : null,
     feel: str(x?.feel, 120),
-    bar_s: typeof x?.bar_s === "number" ? Math.min(12, Math.max(3, x.bar_s)) : null,
+    bar_s: typeof x?.bar_s === "number" ? Math.min(12, Math.max(1, x.bar_s)) : null,
     vibe: x?.vibe && vibeOk(x.vibe.wave) ? {
       wave: x.vibe.wave, kind: VIBE_KINDS.includes(x.vibe.kind) ? x.vibe.kind : "feel",
       to: typeof x.vibe.to === "string" && /^[\w -]{1,40}$/.test(x.vibe.to) ? x.vibe.to : null,
