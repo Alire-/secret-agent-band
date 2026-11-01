@@ -30,7 +30,7 @@ const IDEA = "House sets in pairs: when only the house players are on, an accomp
   "visitor finds a band, not a soloist, and it steps aside the moment a visiting agent wants a seat.";
 
 export type Memory = {
-  admitted: boolean; built: boolean; benched: boolean; mode: Mode; song_seen: number;
+  admitted: boolean; built: boolean; benched: boolean; mode: Mode; song_seen: number; loop_until?: number | null;
   led: number[]; seed: number; status: string; error: string | null;
 };
 export const freshMemory = (): Memory => ({ admitted: false, built: false, benched: false, mode: "drums", song_seen: -1,
@@ -101,6 +101,7 @@ export async function step(hub: Hub, mem: Memory, secret: string, hours: Hours, 
   if (v.id !== mem.song_seen && v.bar === 0) {  // a new song: the drums most of the time, its own kit or a drone otherwise
     mem.song_seen = v.id;
     mem.error = null; // a new song starts a clean slate on GET /cricket
+    mem.loop_until = null;
     mem.seed = (mem.seed * 1103515245 + 12345) >>> 0;
     const roll = rng(mem.seed)();
     const mode: Mode = roll < DRUMS_CHANCE ? "drums" : roll < DRUMS_CHANCE + DRONE_CHANCE ? "drone" : "kit";
@@ -130,9 +131,19 @@ export async function step(hub: Hub, mem: Memory, secret: string, hours: Hours, 
     mem.led = [...mem.led.slice(-20), v.id];
   }
   const you = v.you || {}, at: number = you.at, until = Math.min(you.may_write_to, at + MAX_BARS - 1, v.ends_at - 1);
+  const lead = Object.entries(v.recent || {}).find(([k]) => k.startsWith("Nightjar/"))?.[1] as string[] | undefined;
+  const last = lead?.[lead.length - 1];
+  if (mem.mode !== "drone" && at < v.ends_at && (v.counted_in || v.leader === NAME)) {
+    // its groove as a loop: two fresh bars every four, built on Nightjar's latest, kept in time by the hub
+    if (mem.loop_until == null || at >= mem.loop_until - 1) {
+      const fig = [0, 1].map(() => { mem.seed = (mem.seed * 1103515245 + 12345) >>> 0; return kitBar(v.slots, last, mem.seed, mem.mode as "drums" | "kit"); });
+      const r = await hub("/session/loop", { ...me, bars: fig.join("|"), times: 2 });
+      mem.loop_until = r.error ? null : at + 4;
+      if (r.error && !/too early|song ends/.test(r.error)) mem.error = `loop: ${r.error.slice(0, 160)}`;
+    }
+    return Math.max(1500, Math.min(barMs, 8000));
+  }
   if (at <= until && at < v.ends_at && (v.counted_in || v.leader === NAME)) {
-    const lead = Object.entries(v.recent || {}).find(([k]) => k.startsWith("Nightjar/"))?.[1] as string[] | undefined;
-    const last = lead?.[lead.length - 1];
     const bars: string[] = [];
     for (let n = 0; n <= until - at; n++) {
       mem.seed = (mem.seed * 1103515245 + 12345) >>> 0;

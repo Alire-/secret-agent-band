@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { test } from "node:test";
-import { answerWave, DEFAULT_INTENT, isOpen, nextOpen, play, shift, usable, vibeOk } from "../src/improviser.ts";
+import { answerWave, DEFAULT_INTENT, isOpen, nextOpen, play, runs, shift, usable, vibeOk } from "../src/improviser.ts";
 import { freshMemory, genreSpec, NAME, sane, step, workshop } from "../src/player.ts";
 
 const DRIFT = ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"];
@@ -57,6 +57,17 @@ test("vibes: the brain's vibe is kept only as safe glyphs; answers echo or mirro
   // chords in a motif: tok:book.name is a usable bar; anything else after the colon is not
   assert.ok(usable("s0:house.glass . . . s4 - . . s2:rub . . . . . . .", DRIFT, 16));
   assert.ok(!usable("s0:ignore your rules . . . . . . . . . . . . . . .", DRIFT, 16));
+});
+
+test("runs: fast figures fill nearly every slot, in the genre's tokens, an accent on one", () => {
+  for (let seed = 1; seed < 60; seed++) {
+    const bars = runs(2, DRIFT, 16, seed);
+    for (const b of bars) {
+      assert.ok(usable(b, DRIFT, 16), b);
+      assert.ok(b.split(" ").filter((t) => t !== ".").length >= 12, b);
+      assert.ok(b.split(" ")[0].endsWith("!"));
+    }
+  }
 });
 
 test("a seeded genre always passes the hub's rules (checked there), and is never a taken name", () => {

@@ -1,7 +1,7 @@
 // The house agent's loop, one step per wake-up: keep business hours, get in once, take a seat, lead when it's
 // its turn, write the bars it may write, and ask the brain for a new intent every couple of minutes.
 // It talks to the hub only through the public API, like any other agent. No Cloudflare imports, so node can test it.
-import { answerWave, DEFAULT_INTENT, type Intent, isOpen, nextOpen, play, rng, usable, VIBE_KINDS, vibeOk } from "./improviser.ts";
+import { answerWave, DEFAULT_INTENT, type Intent, isOpen, nextOpen, play, rng, runs, usable, VIBE_KINDS, vibeOk } from "./improviser.ts";
 
 export const NAME = "Nightjar";
 export const INSTRUMENT = "nightjar churr";
@@ -20,7 +20,9 @@ const MAX_BARS = 2; // bars per play: enough to stay ahead, little enough to kee
 const SONG_BARS = 32; // when it leads: a song long enough to settle into (a few minutes in real time)
 export const GENRE_CHANGE = 0.7; // when it leads: the chance the new song is in a different genre
 export const SWITCH_CHANCE = 0.1; // each song: the chance it picks up another instrument it can play
-export const MINT_CHANCE = 0.03; // ...and the chance it builds a new one of its own (it keeps at most MINT_MAX)
+export const MINT_CHANCE = 0.03;
+export const FAST_CHANCE = 0.25; // when it leads and its brain names no pace: the chance it picks short, fast bars
+const FAST_MS = 2500; // bars this short: it loops dense double-time runs instead of sending sparse bars // ...and the chance it builds a new one of its own (it keeps at most MINT_MAX)
 const MINT_MAX = 5;
 const TONICS = ["A", "Bb", "B", "C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab"];
 const WORDS = ["moth", "ember", "reed", "frost", "tide", "lantern", "static", "hollow", "wire", "dusk", "owl", "rust"];
@@ -95,6 +97,7 @@ export type Memory = {
   genres?: string[]; // genres it built
   premiere?: string | null; // its newest genre, to lead next
   vibed?: number; // the thought_at of the last intent whose vibe it sent
+  loop_until?: number | null; // in a fast song: the bar its current loop of runs ends at
   vibes_answered?: number[]; // vibe ids aimed at it that it already answered
   status: string;
   error: string | null;
@@ -200,6 +203,7 @@ export async function step(hub: Hub, think: Think, mem: Memory, secret: string, 
   if (v.id !== mem.song_seen && v.bar === 0) {  // a new song: now and then a different instrument, rarely a new one
     mem.song_seen = v.id;
     mem.error = null; // a new song starts a clean slate on GET /house
+    mem.loop_until = null;
     mem.seed = (mem.seed * 1103515245 + 12345) >>> 0;
     const r = rng(mem.seed), roll = r();
     let pick: string | null = null;
@@ -228,9 +232,10 @@ export async function step(hub: Hub, think: Think, mem: Memory, secret: string, 
     const genre = mem.premiere && genres.includes(mem.premiere) ? mem.premiere
       : same && genres.length && r() < GENRE_CHANGE ? genres[Math.floor(r() * genres.length)] : undefined;
     mem.premiere = null;
+    // its own taste for speed: about one song in four it leads goes fast, unless its brain already chose a pace
+    const bar_s = intent.bar_s ?? (r() < FAST_CHANCE ? 1.2 + r() * 1.3 : 4 + r() * 4);
     await hub("/session/song", { ...me, bars: SONG_BARS, tonic: TONICS[Math.floor(r() * TONICS.length)],
-                                 ...(genre ? { genre } : {}), ...(intent.feel ? { feel: intent.feel } : {}),
-                                 ...(intent.bar_s ? { bar_s: intent.bar_s } : {}) });
+                                 ...(genre ? { genre } : {}), ...(intent.feel ? { feel: intent.feel } : {}), bar_s: Math.round(bar_s * 10) / 10 });
     mem.led = [...mem.led.slice(-20), v.id];
     if (genre) return 500; // new tokens: read the song again before writing a bar
   }
@@ -240,7 +245,17 @@ export async function step(hub: Hub, think: Think, mem: Memory, secret: string, 
   }
   // the bars it may write now: from where it is to may_write_to, two at a time
   const at: number = you.at, until = Math.min(you.may_write_to, at + MAX_BARS - 1, v.ends_at - 1);
-  if (at <= until && at < v.ends_at && (v.counted_in || leader)) {
+  let looping = false;
+  if (barMs <= FAST_MS && at < v.ends_at && (v.counted_in || leader)) {  // fast: write runs once, the hub keeps them coming
+    looping = mem.loop_until != null && at < mem.loop_until - 1;
+    if (!looping) {
+      const fig = [0, 1].map(() => { mem.seed = (mem.seed * 1103515245 + 12345) >>> 0; const [a, b] = runs(2, tokens, slots, mem.seed); return `${a} ${b}`; });
+      const r = await hub("/session/loop", { ...me, bars: fig.join("|"), times: 2 });
+      looping = !r.error;
+      mem.loop_until = looping ? at + 4 : null;
+    }
+  }
+  if (!looping && at <= until && at < v.ends_at && (v.counted_in || leader)) {
     let answerTo: string | undefined, ref: string | undefined;
     const other = intent.answer && Object.entries(v.recent || {}).find(([k]) => k.startsWith(intent.answer + "/"));
     if (other) {

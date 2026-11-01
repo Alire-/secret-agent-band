@@ -50,9 +50,9 @@ test("it waits for Nightjar, sits in with it, and steps away for the night when 
   assert.ok(posts.some(([p, b]) => p === "/session/join" && b.front === false));
   members = [{ agent: "Nightjar" }, { agent: NAME }];
   await cricketStep(hub, mem, "s", open);
-  const played = posts.filter(([p]) => p === "/session/play").map(([, b]) => b.bars);
-  assert.equal(played.length, 1);
-  assert.equal(played[0].split("|").length, 2);
+  const looped = posts.filter(([p]) => p === "/session/loop").map(([, b]) => b);  // its groove goes out as a loop
+  assert.equal(looped.length, 1);
+  assert.deepEqual([looped[0].bars.split("|").length, looped[0].times], [2, 2]);
   crowd = [{ agent: "Visitor", standby: true }]; // a visitor waiting for a seat is enough
   await cricketStep(hub, mem, "s", open);
   assert.ok(posts.some(([p]) => p === "/session/leave"));

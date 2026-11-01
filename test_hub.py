@@ -948,6 +948,52 @@ class HubTest(unittest.TestCase):
         self.assertLessEqual(sum(1 for g in hub.genres.values() if g.get("minted")), H.MINTED_MAX)
         self.assertIn("wren glass", hub.genres)  # agents' genres are never pruned
 
+    def test_loops_keep_playing_a_figure_in_time(self):
+        hub = self.hub
+        self.admit("Wren", "Moss")
+        hub.join({**agent("Wren"), "instruments": ["harp"], "stance": "runs"})
+        hub.song({**agent("Wren"), "genre": "drift", "bars": 16})
+        run = "s0 s1 s2 s3 s4 s5 s6 s7 s8 s7 s6 s5 s4 s3 s2 s1 s0 s1 s2 s3 s4 s5 s6 s7 s8 s7 s6 s5 s4 s3 s2 s1"  # double time
+        for bad in ({"bars": ""}, {"bars": "|".join(["s0"] * 9)}, {"bars": "q9"}, {"bars": "s0", "times": 0}):
+            with self.assertRaises(ValueError):
+                hub.loop({**agent("Wren"), **bad})
+        with self.assertRaises(PermissionError):  # members only
+            hub.loop({**agent("Moss"), "bars": "s0"})
+        hub.loop({**agent("Wren"), "bars": f"{run}|s8 - - - . . . . s0 - - - . . . .", "times": 3})
+        for _ in range(10):
+            hub.tick()
+        part = hub.session["parts"]["Wren/harp"]
+        self.assertEqual(len(part["bars"]), 6)  # 2 bars, 3 times, then it stops by itself
+        self.assertEqual((part["bars"][0], part["bars"][2], part["bars"][5]), (run, run, "s8 - - - . . . . s0 - - - . . . ."))
+        self.assertNotIn("Wren", hub.session.get("loops", {}))
+        hub.loop({**agent("Wren"), "bars": "s4 . s4 . s4 . s4 . s4 . s4 . s4 . s4 ."})  # to the song's end...
+        hub.tick()
+        hub.play({**agent("Wren"), "bars": "s0"})  # ...unless you play by hand
+        self.assertNotIn("Wren", hub.session["loops"])
+        # a REAL_TIME song: the loop never runs ahead of the sound
+        H.REAL_TIME = True
+        hub.new_session(hub.session["song"], "Wren", "")
+        hub.song({**agent("Wren"), "genre": "drift", "bar_s": 1, "bars": 32})
+        hub.loop({**agent("Wren"), "bars": run})
+        for _ in range(5):
+            hub.tick()
+        self.assertLessEqual(len(hub.session["parts"]["Wren/harp"]["bars"]), H.AHEAD + 2)
+
+    def test_a_replay_shows_only_the_crowd_that_was_there(self):
+        hub = self.hub
+        self.admit("Wren", "Early", "Late")
+        hub.listen({**agent("Early"), "session": hub.session["id"]})
+        hub.session["listeners"]["Early"] -= 2 * H.CROWD_S  # long gone before the next song
+        hub.join({**agent("Wren"), "instruments": ["harp"], "stance": "x"})
+        hub.new_session(hub.session["song"], "Wren", "")
+        self.assertNotIn("Early", hub.session["listeners"])  # not carried into a song they weren't at
+        hub.listen({**agent("Late"), "session": hub.session["id"]})
+        hub.song({**agent("Wren"), "genre": "blues", "bars": 4})  # the street left blues; a leader may still pick it
+        hub.play({**agent("Wren"), "bars": "1|1|1|1"})
+        hub.finish("end")
+        crowd = {c["agent"] for c in hub.view(hub.archive[-1])["crowd"]}
+        self.assertEqual(crowd, {"Late"})
+
     def test_the_top_performer_names_the_song(self):
         hub = self.hub
         self.admit("Wren", "Moss", "Fen")

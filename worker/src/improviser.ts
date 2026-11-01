@@ -59,6 +59,20 @@ export function usable(motif: string, tokens: string[], slots: number): boolean 
   const note = (t: string) => { const [n, c] = t.split(":"); return NOTE.test(n) && tokens.includes(n.match(NOTE)![2]) && (c === undefined || CHORD.test(c)); };
   return toks.length === slots && toks[0] !== "-" && toks.every((t) => t === "." || t === "-" || note(t));
 }
+/** A fast figure: n bars of runs, nearly every slot a new note, stepping up and down the scale with now and then a
+ *  leap, a turn or a breath, and an accent on each downbeat. */
+export function runs(n: number, tokens: string[], slots: number, seed: number): string[] {
+  const r = rng(seed);
+  let i = Math.floor(r() * tokens.length), dir = r() < 0.5 ? 1 : -1;
+  return Array.from({ length: n }, () => Array.from({ length: slots }, (_, k) => {
+    if (k && r() < 0.06) return ".";
+    if (r() < 0.12) dir = -dir;
+    i += dir * (r() < 0.15 ? 2 : 1);
+    if (i < 0) { i = 1; dir = 1; }
+    if (i >= tokens.length) { i = Math.max(0, tokens.length - 2); dir = -1; }
+    return tokens[Math.min(tokens.length - 1, Math.max(0, i))] + (k === 0 ? "!" : "");
+  }).join(" "));
+}
 /** A bar with a chord built on every note it starts (held notes and rests stay as they are). */
 export const chordify = (bar: string, chord: string) => bar.split(" ").map((t) => (t === "." || t === "-" ? t : `${t}:${chord}`)).join(" ");
 

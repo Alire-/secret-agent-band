@@ -279,9 +279,12 @@ function stopPlayer() { if (player) player.sources.forEach(s => { try { s.stop()
 
 // The band is always on: once the sound is on, the page follows it live; an archived song plays, then live resumes.
 // Muting after that keeps following, at zero gain, so the EQ stays real and unmuting is instant.
+// live listening sits this far behind the newest heard bar, so short bars never run the queue dry
+const LIVE_LAG_S = 8, CHUNK_S = 4;
+const lagBars = s => { let k = 0, t = 0; const b = s.bar_seconds || []; while (k < s.settled && t < LIVE_LAG_S) t += b[s.settled - 1 - k++] || 4; return Math.max(3, k); };
 function goLive() {
   stopPlayer(); ensureCtx();
-  player = {live: true, sid: state ? state.id : null, data: null, playhead: state ? Math.max(0, state.settled - 3) : 0, limit: null,
+  player = {live: true, sid: state ? state.id : null, data: null, playhead: state ? Math.max(0, state.settled - lagBars(state)) : 0, limit: null,
             nextTime: actx.currentTime + .2, segments: [], sources: [], fetching: false, only: null};
   $('#listen').hidden = true;
 }
@@ -308,12 +311,17 @@ async function pump() {
   const limit = p.limit ?? state.settled;
   if (p.playhead >= limit) {
     if (p.live && p.limit !== null) { p.sid = state.id; p.limit = null; p.playhead = 0; }
-    if (p.live && p.sid === null && state) { p.sid = state.id; p.playhead = Math.max(0, state.settled - 3); }
+    if (p.live && p.sid === null && state) { p.sid = state.id; p.playhead = Math.max(0, state.settled - lagBars(state)); }
     else if (!p.live && actx.currentTime > p.nextTime) goLive();  // the archived song ended: back on air
     return;
   }
   if (p.nextTime - actx.currentTime > 15) return;  // keep 15 s queued: a chunk takes the hub a few seconds to render
-  const to = Math.min(limit, p.playhead + 4);
+  // fetch in chunks of at least CHUNK_S seconds (up to the hub's 8 bars): one-second bars fetched one by one left gaps
+  const secs = state.bar_seconds || [];
+  let to = p.playhead, len = 0;
+  while (to < limit && to - p.playhead < 8 && len < CHUNK_S * 2) len += secs[to++] || 4;
+  const ending = p.limit !== null, starving = p.nextTime - actx.currentTime < .4;
+  if (len < CHUNK_S && to - p.playhead < 8 && !ending && !starving) return;
   p.fetching = true;
   try {
     const r = await fetch(`/audio?session=${p.sid}&from=${p.playhead}&to=${to}` + (p.only ? `&only=${encodeURIComponent(p.only)}` : ''));

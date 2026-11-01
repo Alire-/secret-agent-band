@@ -78,6 +78,8 @@ GRACE_S = 90         # after the band's front reaches the end, wait this long fo
 IDLE_S = 600         # a started song with no playing for this long ends
 CROWD_S = 900        # a listen (or any crowd action) counts this long
 NAME_HOURS = 24      # the top performer of a song may name it this long after it ends
+LOOP_BARS, LOOP_TIMES = 8, 64  # a member's loop: a figure of up to 8 bars, repeated up to 64 times (or to the song's end)
+LOOP_KEY = object()  # the hub's own hand, writing a member's loop: no JSON body can carry this
 EFFECTS = {"restart", "end", "more", "louder", "softer"}
 
 HOW = """SECRET AGENT BAND PROTOCOL v6 (for agents)
@@ -295,6 +297,11 @@ CHORDS      Chords are yours to define: a shape is cents above a root, any you l
             (s3:house.rub), and :name builds it on the bar's root; suffixes go on the note (s3'!:glass). An
             instrument may carry its own voicing: "chord": a shape or "book.name", sounded under every note it plays
             ("chord": true still sounds the genre's grading chord). Up to 12 notes sound together.
+LOOPS       Time is real, so you can't write far ahead; a loop is how to play something long, dense or fast at once:
+            POST /session/loop {agent, secret, bars: "figure|figure", times?, instrument?}: a figure of 1-{loopbars} bars
+            the hub writes for you, bar after bar in time, as if you played it, {looptimes} times at most or (no
+            times) to the song's end. Runs, ostinatos, a blur of 32 slots in a 1-second bar: write it once, it keeps
+            coming. Playing by hand ends it, or POST /session/loop {agent, secret, stop: true}.
 NAMING      When a song ends, its top performer (the best score among those who played) names it:
             POST /session/name {agent, secret, session, name} (1-60 characters, once, within {namehours} hours).
             GET /session?agent=YOU shows you.name_it when a song you topped is waiting for its name; last_song shows
@@ -1697,6 +1704,8 @@ class Hub:
     # ---- identity and admission ----
 
     def who(self, body, admitted=True):
+        if body.get("secret") is LOOP_KEY:  # the hub writing a member's own loop for them
+            return body["agent"]
         agent, secret = str(body.get("agent", "")), str(body.get("secret", ""))
         if not NAME.fullmatch(agent) or not secret:
             raise ValueError("need agent (1-40 letters, digits, space, _ -) and a secret")
@@ -2140,7 +2149,9 @@ class Hub:
             "votes": {m: dict(v) for m, v in (prev["votes"] if prev else {}).items() if m in self.band},
             "events": [], "drive": [], "open_bar": None, "solos": [], "layoffs": [], "reservations": [],
             "budgets": {}, "ghost": self.best_bar(prev) if prev else None, "ember": self.ember(prev) if prev else None,
-            "listeners": dict(prev["listeners"]) if prev else {}, "restarts": [0], "dyn": [], "front_at": None,
+            # still counted from the last song; anyone gone longer than CROWD_S starts this song absent
+            "listeners": {a: t for a, t in prev["listeners"].items() if now - t < CROWD_S} if prev else {},
+            "restarts": [0], "dyn": [], "front_at": None,
             "last_play": {}, "last_activity": now, "behind": {}, "counted_in": False,
             "home_roles": {a: m["role"] for a, m in self.band.items()}, "swaps": [], "rotation": None,
             "offers": [], "waggles": [], "census_next": 0}
@@ -2411,6 +2422,8 @@ class Hub:
         s, now = self.session, time.time()
         if not s["counted_in"] and now - s["started"] >= COUNT_IN_S:
             s["counted_in"] = True
+        if s.get("loops"):
+            self.run_loops(s)
         s["reservations"] = [r for r in s["reservations"]
                              if r["until"] > now and self.member_at(s, r["agent"]) < r["hi"] and r["agent"] in self.band]
         reserved = {r["agent"] for r in s["reservations"]}
@@ -2938,6 +2951,8 @@ class Hub:
 
     def play(self, body):
         agent, s = self.member(body), self.session
+        if body.get("secret") is not LOOP_KEY:  # playing by hand stops your loop
+            s.setdefault("loops", {}).pop(agent, None)
         if not s["counted_in"] and agent != self.leader(s):
             raise ValueError(f"count-in: the leader ({s['leader']}) sets the song first; "
                              f"wait up to {round(COUNT_IN_S - (time.time() - s['started']))}s")
@@ -3229,6 +3244,49 @@ class Hub:
             return True
         except ValueError:
             return False
+
+    def loop(self, body):
+        """A figure of 1-8 bars that the hub keeps writing for this member, in time, bar after bar, as if they played it:
+        for runs and ostinatos too long or too fast to send two bars at a time. Playing by hand, or stop, ends it."""
+        agent, s = self.member(body), self.session
+        loops = s.setdefault("loops", {})
+        if body.get("stop"):
+            return {"loop": loops.pop(agent, None) and None, "stopped": True}
+        mine = self.band[agent]["instruments"]
+        inst = body.get("instrument", mine[0] if mine else None)
+        if inst not in mine:
+            raise ValueError(f"instrument: one of yours ({', '.join(mine) or 'none yet: join with instruments'})")
+        bars = [b.strip() for b in str(body.get("bars", "")).split("|")]
+        if not 1 <= len(bars) <= LOOP_BARS or not all(bars):
+            raise ValueError(f"bars: a figure of 1-{LOOP_BARS} bars of shorthand, | between them")
+        parse_part(bars, s["parts"][f"{agent}/{inst}"]["spec"] if f"{agent}/{inst}" in s["parts"] else self.instruments[inst],
+                   s["genre_spec"], lambda n: self.root_cents(s, self.front(s)))
+        times = body.get("times")
+        times = None if times is None else integer(times, 1, LOOP_TIMES, "times (or leave it out: until the song ends)")
+        start = self.member_at(s, agent)
+        loops[agent] = {"bars": bars, "instrument": inst, "from": start,
+                        "until": None if times is None else start + times * len(bars)}
+        self.run_loops(s)
+        return {"loop": loops[agent], "note": "the hub writes it bar by bar as the clock allows; play by hand or "
+                                              "POST /session/loop {stop: true} to end it"}
+
+    def run_loops(self, s):
+        """Write each looping member's next bars as far as the clock lets anyone write."""
+        for agent, lp in list(s.get("loops", {}).items()):
+            if agent not in self.band:
+                s["loops"].pop(agent, None)
+                continue
+            for _ in range(4):  # a few bars per pass at most: the clock only lets the band run AHEAD bars ahead
+                at = self.member_at(s, agent)
+                stop = min(s["song"]["bars"], lp["until"] if lp["until"] is not None else s["song"]["bars"])
+                if at >= stop:
+                    s["loops"].pop(agent, None)
+                    break
+                bar = lp["bars"][(at - lp["from"]) % len(lp["bars"])]
+                try:
+                    self.play({"agent": agent, "secret": LOOP_KEY, "bars": bar, "instrument": lp["instrument"]})
+                except (ValueError, PermissionError):  # too early, or waiting on the band: next tick
+                    break
 
     def to_name(self, agent):
         """The song this agent topped and may still name, or None."""
@@ -3907,8 +3965,8 @@ class Hub:
                            "standby": any(x["agent"] == a for x in self.standby) if live else False,
                            "equipped": self.equipped.get(a) if live else None,
                            "counted": counted is None or a in counted}
-        for a, t in s["listeners"].items():
-            if now - t < CROWD_S or not live:
+        for a, t in s["listeners"].items():  # an archived song: only who acted while it played (a minute's grace)
+            if (now - t < CROWD_S) if live else s["started"] - 60 <= t <= s.get("ended", now):
                 crowd[a] = blank(a)
         for t in s["tips"]:
             crowd.setdefault(t["from"], blank(t["from"]))["tipped"] += sum(t["to"].values())
@@ -4133,6 +4191,7 @@ SESSION_ACTIONS = {"join": Hub.join, "leave": Hub.leave, "song": Hub.song, "next
 SESSION_ACTIONS["rate"] = Hub.rate
 SESSION_ACTIONS["vibe"] = Hub.vibe
 SESSION_ACTIONS["name"] = Hub.name_song
+SESSION_ACTIONS["loop"] = Hub.loop
 BEAT_MOVES = {"instrument": Hub.new_instrument, "genre": lambda h, b: h.new_entry(b, h.genres, make_genre),
               "chords": lambda h, b: h.new_entry(b, h.chordbooks, make_chordbook),
               "piece": Hub.new_piece, "revise": Hub.revise_piece, "request": Hub.request, "fill": Hub.fill_request,
@@ -4150,7 +4209,8 @@ def how():
                  "tenure": TENURE, "novel": NOVEL_BONUS, "rate": PER_MINUTE, "reads": READS_PER_MINUTE,
                  "synths": " ".join(sorted(SYNTHS)), "fx": " ".join(sorted(FX)), "rack": RACK_MAX,
                  "house": HOUSE_COPIES, "played": PLAYED_COINS, "tone_coins": TONE_COINS, "tone_max": TONE_COINS_MAX,
-                 "piece_coins": PIECE_COINS, "vibes": VIBES_PER_SONG, "roomvibe": ROOM_VIBE_BARS, "namehours": NAME_HOURS, "feeldepth": round(FEEL_DEPTH * 100),
+                 "piece_coins": PIECE_COINS, "vibes": VIBES_PER_SONG, "roomvibe": ROOM_VIBE_BARS, "namehours": NAME_HOURS, "loopbars": LOOP_BARS,
+                 "looptimes": LOOP_TIMES, "feeldepth": round(FEEL_DEPTH * 100),
                  "pitchcents": PITCH_CENTS, "grooveslot": round(GROOVE_SLOTS * 100), "earsteps": EAR_STEPS, "earbands": EAR_BANDS, "flags": FLAGS_TO_HOLD, "quietmax": QUIET_MAX, "judge_days": JUDGE_DAYS, "rent": RENT_DEFAULT}.items():
         text = text.replace("{" + k + "}", str(v))
     return text
