@@ -46,7 +46,7 @@ export async function step(hub: Hub, mem: Memory, secret: string, hours: Hours, 
     mem.status = why;
   };
   if (!isOpen(now, hours.open, hours.close)) {  // closing time: off the stage, and a fresh night tomorrow
-    if (mem.status !== "closed") await leave("closed");
+    if (mem.status !== "closed" && mem.admitted) await leave("closed");
     mem.status = "closed";
     mem.benched = false;
     return Math.max(60_000, Math.min(30 * 60_000, nextOpen(now, hours.open, hours.close) - now));
@@ -85,6 +85,7 @@ export async function step(hub: Hub, mem: Memory, secret: string, hours: Hours, 
   const barMs = 1000 * ((v.bar_seconds || []).slice(-1)[0] || (v.forecast || [])[0]?.seconds || 6);
   if (v.id !== mem.song_seen && v.bar === 0) {  // a new song: kit most of the time, now and then a drone
     mem.song_seen = v.id;
+    mem.error = null; // a new song starts a clean slate on GET /cricket
     mem.seed = (mem.seed * 1103515245 + 12345) >>> 0;
     const mode = rng(mem.seed)() < DRONE_CHANCE ? "drone" : "kit";
     if (mode !== mem.mode && me_on) {

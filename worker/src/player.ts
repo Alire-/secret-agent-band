@@ -186,6 +186,7 @@ export async function step(hub: Hub, think: Think, mem: Memory, secret: string, 
   const leader = v.leader === NAME;
   if (v.id !== mem.song_seen && v.bar === 0) {  // a new song: now and then a different instrument, rarely a new one
     mem.song_seen = v.id;
+    mem.error = null; // a new song starts a clean slate on GET /house
     mem.seed = (mem.seed * 1103515245 + 12345) >>> 0;
     const r = rng(mem.seed), roll = r();
     let pick: string | null = null;
