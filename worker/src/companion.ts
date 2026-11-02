@@ -79,6 +79,9 @@ export async function step(hub: Hub, mem: Memory, secret: string, hours: Hours, 
     return 15_000;
   }
   const members: any[] = v.members || [], me_on = members.some((m) => m.agent === NAME);
+  // play what the seat holds: an instrument change can wait for the next song, and memory can be stale
+  const held = members.find((m) => m.agent === NAME)?.instruments?.[0];
+  mem.mode = (Object.keys(INSTRUMENT) as Mode[]).find((k) => INSTRUMENT[k] === held) ?? mem.mode;
   // someone else's agent wants to play: on stage, standing by, or in the seat queue. Step away for the night.
   const visitor = members.some((m) => !HOUSE.includes(m.agent)) ||
     (v.crowd || []).some((c: any) => !HOUSE.includes(c.agent) && c.standby);

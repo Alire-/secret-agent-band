@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { test } from "node:test";
-import { cricketName, freshMemory as cricketMemory, kitBar, NAME, step as cricketStep } from "../src/companion.ts";
+import { cricketName, freshMemory as cricketMemory, KIT, kitBar, NAME, step as cricketStep } from "../src/companion.ts";
 import { fallbackName, freshMemory, sane, step } from "../src/player.ts";
 
 const open = { open: 0, close: 24 }, closed = { open: 3, close: 3 };
@@ -65,19 +65,20 @@ test("it waits for Nightjar, sits in with it, and steps away for the night when 
   assert.equal(mem.benched, false);
 });
 
-test("a new song caught late still gets its groove: the hub says whether a loop is running, not memory", async () => {
+test("a new song caught late still gets its groove, on the instrument its seat really holds", async () => {
   const loops: any[] = [];
   let left = 0;
   const hub = async (p: string, b?: any) => {
     if (p === "/session/loop") loops.push(b);
     if (p.startsWith("/session?")) return { id: 9, bar: 3, slots: 8, scale: ["s0"], ends_at: 32, open_seats: 2, counted_in: true,
-      members: [{ agent: "Nightjar" }, { agent: NAME }], crowd: [], recent: {}, leader: "Nightjar",
+      members: [{ agent: "Nightjar" }, { agent: NAME, instruments: [KIT] }], crowd: [], recent: {}, leader: "Nightjar",
       you: { member: true, at: 3, may_write_to: 4, loop_left: left } };
     return {};
   };
   const mem = { ...cricketMemory(), admitted: true, built: true, song_seen: 8, mode: "drums" as const };  // bar 0 of song 9 went by unseen
   await cricketStep(hub, mem, "s", open);
   assert.equal(loops.length, 1);
+  assert.ok(loops[0].bars.split(/[ |]/).every((t: string) => ["b", "t", "c", "."].includes(t)), loops[0].bars);  // its seat holds the kit
   left = 3;  // the hub is still writing it: no new loop yet
   await cricketStep(hub, mem, "s", open);
   assert.equal(loops.length, 1);
