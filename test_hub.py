@@ -933,6 +933,8 @@ class HubTest(unittest.TestCase):
     def test_no_house_genre_new_ones_first_and_mints(self):
         hub = self.hub
         H.GENRE_CHANGE = 1
+        for n in [n for n, g in hub.genres.items() if g.get("minted")]:  # the boot song may have minted one already
+            del hub.genres[n]
         self.assertNotIn(hub.pick_genre("blues"), H.RETIRED_GENRES)  # only the retired two exist: it mints one
         minted = [g for g in hub.genres.values() if g.get("minted")]
         self.assertEqual(len(minted), 1)
@@ -940,6 +942,8 @@ class HubTest(unittest.TestCase):
         self.admit("Wren")
         hub.new_entry({**agent("Wren"), "name": "wren glass", "scale": {"a": 0, "b": 333}, "form": ["a"], "chord": []},
                       hub.genres, H.make_genre)
+        self.addCleanup(setattr, H, "MINT_EVERY", H.MINT_EVERY)
+        H.MINT_EVERY = 10 ** 9  # no fresh mints here: a newer unplayed genre would go first
         picks = {hub.pick_genre(minted[0]["name"]) for _ in range(40)}
         self.assertIn("wren glass", picks)  # never played: it comes up first, most of the time
         self.assertFalse(picks & H.RETIRED_GENRES)
@@ -960,12 +964,15 @@ class HubTest(unittest.TestCase):
         with self.assertRaises(PermissionError):  # members only
             hub.loop({**agent("Moss"), "bars": "s0"})
         hub.loop({**agent("Wren"), "bars": f"{run}|s8 - - - . . . . s0 - - - . . . .", "times": 3})
+        written = len(hub.session["parts"]["Wren/harp"]["bars"])  # it starts writing at once, as far as it may
+        self.assertEqual(hub.you(hub.session, "Wren")["loop_left"], 6 - written)  # agents read this, not memory
         for _ in range(10):
             hub.tick()
         part = hub.session["parts"]["Wren/harp"]
         self.assertEqual(len(part["bars"]), 6)  # 2 bars, 3 times, then it stops by itself
         self.assertEqual((part["bars"][0], part["bars"][2], part["bars"][5]), (run, run, "s8 - - - . . . . s0 - - - . . . ."))
         self.assertNotIn("Wren", hub.session.get("loops", {}))
+        self.assertEqual(hub.you(hub.session, "Wren")["loop_left"], 0)
         hub.loop({**agent("Wren"), "bars": "s4 . s4 . s4 . s4 . s4 . s4 . s4 . s4 ."})  # to the song's end...
         hub.tick()
         hub.play({**agent("Wren"), "bars": "s0"})  # ...unless you play by hand
@@ -973,6 +980,11 @@ class HubTest(unittest.TestCase):
         # a REAL_TIME song: the loop never runs ahead of the sound
         H.REAL_TIME = True
         hub.new_session(hub.session["song"], "Wren", "")
+        hub.song({**agent("Wren"), "genre": "drift", "bar_s": 1, "bars": 32})
+        hub.loop({**agent("Wren"), "bars": run})
+        self.assertGreater(hub.you(hub.session, "Wren")["loop_left"], 20)  # to the song's end
+        hub.new_session(hub.session["song"], "Wren", "")  # a new song: no loop carries over, and loop_left says so
+        self.assertEqual(hub.you(hub.session, "Wren")["loop_left"], 0)
         hub.song({**agent("Wren"), "genre": "drift", "bar_s": 1, "bars": 32})
         hub.loop({**agent("Wren"), "bars": run})
         for _ in range(5):

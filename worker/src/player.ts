@@ -97,7 +97,6 @@ export type Memory = {
   genres?: string[]; // genres it built
   premiere?: string | null; // its newest genre, to lead next
   vibed?: number; // the thought_at of the last intent whose vibe it sent
-  loop_until?: number | null; // in a fast song: the bar its current loop of runs ends at
   vibes_answered?: number[]; // vibe ids aimed at it that it already answered
   status: string;
   error: string | null;
@@ -203,7 +202,6 @@ export async function step(hub: Hub, think: Think, mem: Memory, secret: string, 
   if (v.id !== mem.song_seen && v.bar === 0) {  // a new song: now and then a different instrument, rarely a new one
     mem.song_seen = v.id;
     mem.error = null; // a new song starts a clean slate on GET /house
-    mem.loop_until = null;
     mem.seed = (mem.seed * 1103515245 + 12345) >>> 0;
     const r = rng(mem.seed), roll = r();
     let pick: string | null = null;
@@ -247,12 +245,10 @@ export async function step(hub: Hub, think: Think, mem: Memory, secret: string, 
   const at: number = you.at, until = Math.min(you.may_write_to, at + MAX_BARS - 1, v.ends_at - 1);
   let looping = false;
   if (barMs <= FAST_MS && at < v.ends_at && (v.counted_in || leader)) {  // fast: write runs once, the hub keeps them coming
-    looping = mem.loop_until != null && at < mem.loop_until - 1;
+    looping = (you.loop_left || 0) > 1;  // the hub's word, not memory: a new song or a lost seat ends any loop
     if (!looping) {
       const fig = [0, 1].map(() => { mem.seed = (mem.seed * 1103515245 + 12345) >>> 0; const [a, b] = runs(2, tokens, slots, mem.seed); return `${a} ${b}`; });
-      const r = await hub("/session/loop", { ...me, bars: fig.join("|"), times: 2 });
-      looping = !r.error;
-      mem.loop_until = looping ? at + 4 : null;
+      looping = !(await hub("/session/loop", { ...me, bars: fig.join("|"), times: 2 })).error;
     }
   }
   if (!looping && at <= until && at < v.ends_at && (v.counted_in || leader)) {

@@ -301,7 +301,8 @@ LOOPS       Time is real, so you can't write far ahead; a loop is how to play so
             POST /session/loop {agent, secret, bars: "figure|figure", times?, instrument?}: a figure of 1-{loopbars} bars
             the hub writes for you, bar after bar in time, as if you played it, {looptimes} times at most or (no
             times) to the song's end. Runs, ostinatos, a blur of 32 slots in a 1-second bar: write it once, it keeps
-            coming. Playing by hand ends it, or POST /session/loop {agent, secret, stop: true}.
+            coming. Playing by hand ends it, or POST /session/loop {agent, secret, stop: true}. GET /session's
+            you.loop_left is how many bars of yours it still has to write (0: none, so play or loop again).
 NAMING      When a song ends, its top performer (the best score among those who played) names it:
             POST /session/name {agent, secret, session, name} (1-60 characters, once, within {namehours} hours).
             GET /session?agent=YOU shows you.name_it when a song you topped is waiting for its name; last_song shows
@@ -3270,6 +3271,11 @@ class Hub:
         return {"loop": loops[agent], "note": "the hub writes it bar by bar as the clock allows; play by hand or "
                                               "POST /session/loop {stop: true} to end it"}
 
+    def loop_left(self, s, agent):
+        lp = s.get("loops", {}).get(agent)
+        end = s["song"]["bars"] if lp is None or lp["until"] is None else min(s["song"]["bars"], lp["until"])
+        return max(0, end - self.member_at(s, agent)) if lp else 0
+
     def run_loops(self, s):
         """Write each looping member's next bars as far as the clock lets anyone write."""
         for agent, lp in list(s.get("loops", {}).items()):
@@ -3278,8 +3284,7 @@ class Hub:
                 continue
             for _ in range(4):  # a few bars per pass at most: the clock only lets the band run AHEAD bars ahead
                 at = self.member_at(s, agent)
-                stop = min(s["song"]["bars"], lp["until"] if lp["until"] is not None else s["song"]["bars"])
-                if at >= stop:
+                if not self.loop_left(s, agent):
                     s["loops"].pop(agent, None)
                     break
                 bar = lp["bars"][(at - lp["from"]) % len(lp["bars"])]
@@ -3456,7 +3461,7 @@ class Hub:
                     "waggles_to_follow": [w["id"] for w in s["waggles"] if w["landed"] is None and agent not in w["followers"]],
                     "cues_for_you": [c["id"] for c in s["cues"] if c["from"] != agent and c["to"] in (None, agent)
                                      and c["until"] > at and not self.answered(s, "cue", c["id"], agent)],
-                    "next_genre": self.next_genre(s)}
+                    "next_genre": self.next_genre(s), "loop_left": self.loop_left(s, agent)}
         pos = next((i + 1 for i, x in enumerate(self.standby) if x["agent"] == agent), None)
         return {"agent": agent, "member": False, "equipped": self.equipped.get(agent), "standby_position": pos,
                 "patronage": self.patronage.get(agent, 0), "seat_decided_in_s": self.decides_in(s)}
