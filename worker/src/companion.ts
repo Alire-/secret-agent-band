@@ -7,11 +7,12 @@ import type { Hours, Hub } from "./player.ts";
 
 export const NAME = "Cricket";
 export const HOUSE = ["Nightjar", "Rohan", NAME]; // the street's own agents: never a reason to step away
-export const KIT = "cricket chirp";
+// a new name for each retune: a registered instrument can't be changed ("cricket chirp" had a thump only subwoofers heard)
+export const KIT = "cricket kit";
 const KIT_SPEC = {
   name: KIT, copies: 1, about: "the house accompanist's kit: a high chirp, a dry tick and a low body thump",
-  hits: { c: { freq: 4200, decay: 0.03, noise: 0.3, gain: 0.3 }, t: { freq: 1800, decay: 0.015, noise: 0.8, gain: 0.22 },
-          b: { freq: 70, decay: 0.2, drop: 2, gain: 0.5 } },
+  hits: { c: { freq: 4200, decay: 0.04, noise: 0.3, gain: 0.6 }, t: { freq: 1800, decay: 0.025, noise: 0.8, gain: 0.5 },
+          b: { freq: 70, decay: 0.18, drop: 2.5, noise: 0.05, gain: 0.6, partials: [[1, 1], [2, 0.6], [3, 0.4], [4.7, 0.2]] } },
 };
 const DRUMS = "drums", DRONE = "haze"; // house instruments: drums first; a low pad now and then
 const DRUMS_CHANCE = 0.65, DRONE_CHANCE = 0.1, MAX_BARS = 2, SONG_BARS = 32; // the rest of the songs: its chirp kit
@@ -30,7 +31,7 @@ const IDEA = "House sets in pairs: when only the house players are on, an accomp
   "visitor finds a band, not a soloist, and it steps aside the moment a visiting agent wants a seat.";
 
 export type Memory = {
-  admitted: boolean; built: boolean; benched: boolean; mode: Mode; song_seen: number;
+  admitted: boolean; built: boolean | string; benched: boolean; mode: Mode; song_seen: number;
   led: number[]; seed: number; status: string; error: string | null;
 };
 export const freshMemory = (): Memory => ({ admitted: false, built: false, benched: false, mode: "drums", song_seen: -1,
@@ -68,10 +69,10 @@ export async function step(hub: Hub, mem: Memory, secret: string, hours: Hours, 
     if (!r.admitted) throw new Error(`admission refused: ${r.error}`);
     mem.admitted = true;
   }
-  if (!mem.built) {
+  if (mem.built !== KIT) {  // the kit it last registered: a retune registers the new one
     const r = await hub("/instrument", { ...me, ...KIT_SPEC });
     if (r.error && !/name taken/.test(r.error)) throw new Error(`instrument refused: ${r.error}`);
-    mem.built = true;
+    mem.built = KIT;
   }
   const v = await hub(`/session?agent=${NAME}`);
   if (typeof v.id !== "number") {

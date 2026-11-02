@@ -991,6 +991,21 @@ class HubTest(unittest.TestCase):
             hub.tick()
         self.assertLessEqual(len(hub.session["parts"]["Wren/harp"]["bars"]), H.AHEAD + 2)
 
+    def test_house_instruments_sound_as_the_code_says_after_a_reload(self):
+        import numpy as np
+        hub = self.hub
+        hub.instruments["drums"]["hits"]["k"] = {**hub.instruments["drums"]["hits"]["k"], "partials": [[1, 1]]}  # an old save
+        hub.instruments["drums"]["rated"] = 3
+        hub.snapshot()
+        drums = Hub(**self.paths).instruments["drums"]
+        self.assertEqual(drums["hits"]["k"]["partials"], H.BUILTIN_INSTRUMENTS["drums"]["hits"]["k"]["partials"])
+        self.assertEqual(drums.get("rated"), 3)  # its history is kept
+        # the kick reaches small speakers: most of its sound above 150 Hz is overtones, not the sub
+        k, out = drums["hits"]["k"], np.zeros(H.RATE)
+        H.add_voice(out, 0, .7, k["freq"], k)
+        f, S = np.fft.rfftfreq(len(out), 1 / H.RATE), np.abs(np.fft.rfft(out)) ** 2
+        self.assertGreater(S[f >= 150].sum() / S.sum(), .2)
+
     def test_a_replay_shows_only_the_crowd_that_was_there(self):
         hub = self.hub
         self.admit("Wren", "Early", "Late")

@@ -976,13 +976,16 @@ BUILTIN_INSTRUMENTS = {
     "keys": {"partials": [[1, .35], [2, .1], [3, .04]], "decay": .9, "chord": True},
     "haze": {"partials": [[1, .6], [1.01, .5], [2.37, .3], [5.11, .15], [7.9, .08]], "attack": 1.5, "decay": 6,
              "vibrato": [.15, 30], "drift": 60, "space": .6},
-    "drums": {"hits": {"k": {"freq": 50, "decay": .12, "drop": 3},
+    # the kick's overtones are what laptop and phone speakers play; its 55 Hz body only reaches real speakers
+    "drums": {"hits": {"k": {"freq": 55, "decay": .14, "drop": 3, "noise": .06,
+                             "partials": [[1, 1], [2, .6], [3, .4], [4.3, .25], [6.1, .12]]},
                        "s": {"freq": 180, "decay": .06, "noise": .7},
-                       "h": {"freq": 1000, "partials": [], "decay": .015, "noise": 1, "gain": .35}}},
+                       "h": {"freq": 1000, "partials": [], "decay": .025, "noise": 1, "gain": .6}}},
 }
 LOOP_VOICES = {k: {"name": k, **make_instrument(v)} for k, v in BUILTIN_INSTRUMENTS.items()}
 HUM = {"name": "crowd hum", **make_instrument({"partials": [[1, 1], [2, .15]], "attack": .05, "decay": .9, "gain": .3})}
-PULSE = {"name": "house pulse", **make_instrument({"hits": {"p": {"freq": 45, "decay": .25, "drop": 1.5, "gain": .5}}})}
+PULSE = {"name": "house pulse", **make_instrument({"hits": {"p": {"freq": 45, "decay": .25, "drop": 1.5, "gain": .5,
+                                                                "partials": [[1, 1], [2, .5], [3, .35], [4, .2]]}}})}
 
 
 def make_piece(spec, genres):
@@ -1612,6 +1615,8 @@ class Hub:
             self.secrets = {a: tuple(v) for a, v in st["secrets"].items()}
             self.admitted, self.wallets, self.minted = set(st["admitted"]), st["wallets"], st["minted"]
             self.genres.update(st["genres"]), self.instruments.update(st["instruments"])
+            for n, spec in BUILTIN_INSTRUMENTS.items():  # house instruments sound as the code says; their history stays
+                self.instruments[n].update(make_instrument(spec))
             self.via = st.get("via", {})
             self.pieces, self.requests = st.get("pieces", {}), st.get("requests", [])
             self.beats, self.ratings = st.get("beats", {}), st.get("ratings", {})

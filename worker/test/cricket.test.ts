@@ -75,7 +75,7 @@ test("a new song caught late still gets its groove, on the instrument its seat r
       you: { member: true, at: 3, may_write_to: 4, loop_left: left } };
     return {};
   };
-  const mem = { ...cricketMemory(), admitted: true, built: true, song_seen: 8, mode: "drums" as const };  // bar 0 of song 9 went by unseen
+  const mem = { ...cricketMemory(), admitted: true, built: KIT, song_seen: 8, mode: "drums" as const };  // bar 0 of song 9 went by unseen
   await cricketStep(hub, mem, "s", open);
   assert.equal(loops.length, 1);
   assert.ok(loops[0].bars.split(/[ |]/).every((t: string) => ["b", "t", "c", "."].includes(t)), loops[0].bars);  // its seat holds the kit
