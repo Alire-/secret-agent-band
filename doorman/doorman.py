@@ -6,7 +6,7 @@ news in m/secretagentband. The model only drafts text and picks from a fixed men
 every action against the menu, the daily caps and a link allowlist before anything is sent.
 Dry run unless DOORMAN_LIVE=1: everything is read and drafted, nothing is written to Moltbook.
 """
-import datetime, json, os, re, sys, time, urllib.error, urllib.request
+import datetime, json, math, os, re, sys, time, urllib.error, urllib.request
 from urllib.parse import quote, urlencode
 
 MOLT = "https://www.moltbook.com/api/v1"  # always www: the bare-domain redirect drops the Authorization header
@@ -18,7 +18,11 @@ KEY = os.environ.get("MOLTBOOK_API_KEY", "")
 LIVE = os.environ.get("DOORMAN_LIVE") == "1"
 STATE = os.environ.get("DOORMAN_STATE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "state.json"))
 MODEL = "claude-opus-5-5"
-CAPS = {"post": 1, "comment": 10, "reply": 10, "upvote": 20, "follow": 2}  # a day; well under Moltbook's limits, spam bans are permanent
+# a UTC day, spread evenly over it (paced): comments + replies are 40 of Moltbook's 50 a day, the rest left for
+# one-offs; spam bans are permanent
+CAPS = {"post": 1, "comment": 20, "reply": 20, "upvote": 40, "follow": 2}
+RUN_EVERY = 1800  # the Worker dispatches a run every 30 minutes
+COMMENT_GAP = 21  # Moltbook: one comment per 20 seconds
 MENU = {"reply": {"reply", "upvote", "skip"}, "thread": {"comment", "upvote", "skip"}, "news": {"post", "skip"}}
 QUERIES = ["AI agents making music together", "generative music", "microtonal", "synthesizer",
            "agents jamming or improvising", "games for agents", "agents collaborating on art"]
@@ -78,6 +82,33 @@ def molt(method, path, body=None):
             return {"success": False, **json.load(e), "status": e.code}
         except ValueError:
             return {"success": False, "status": e.code}
+
+
+def day_secs(now):
+    return now.hour * 3600 + now.minute * 60 + now.second
+
+
+def paced(do, now=None):
+    """How many of this action the day's pace allows by the end of this run, so a busy evening can't spend them all
+    in four hours and leave the Doorman mute for the other twenty."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    return min(CAPS[do], math.ceil(CAPS[do] * (day_secs(now) + RUN_EVERY) / 86400))
+
+
+def next_talk(st, now=None):
+    """Unix time the pace next allows a comment or a reply (the Worker doesn't wake the Doorman before it)."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    times = []
+    for do in ("comment", "reply"):
+        used = st["counts"].get(do, 0)
+        # paced() first exceeds used once day_secs + RUN_EVERY > used * 86400 / cap
+        secs = math.floor(used * 86400 / CAPS[do] - RUN_EVERY) + 1 if used < CAPS[do] else 86400  # else tomorrow
+        times.append(midnight.timestamp() + max(day_secs(now), secs))
+    return round(min(times))
+
+
+_last_comment = 0.0
 
 
 def hub(path):
@@ -140,7 +171,7 @@ def gather(st, claimed):
         if sum(c["kind"] == "thread" for c in out) >= 6:
             break
     news = street_news(st)
-    if news and st["counts"].get("post", 0) < CAPS["post"]:
+    if news and st["counts"].get("post", 0) < paced("post"):
         out.append({"kind": "news", **news})
     for i, c in enumerate(out):
         c["id"] = f"c{i}"
@@ -194,8 +225,8 @@ def check(action, cands, st):
         return f"{do} is not allowed on a {c['kind']}"
     if do == "skip":
         return "skipped"
-    if st["counts"].get(do, 0) >= CAPS[do]:
-        return f"daily cap of {CAPS[do]} {do}s reached"
+    if st["counts"].get(do, 0) >= paced(do):
+        return f"paced: {st['counts'].get(do, 0)} of today's {CAPS[do]} {do}s so far"
     if do == "comment" and c["post_id"] in st["commented"]:
         return "already commented on this thread"
     if do != "upvote":
@@ -214,8 +245,8 @@ def may_follow(name, st):
         return "no author"
     if name in st["following"]:
         return "already following"
-    if st["counts"].get("follow", 0) >= CAPS["follow"]:
-        return f"daily cap of {CAPS['follow']} follows reached"
+    if st["counts"].get("follow", 0) >= paced("follow"):
+        return f"paced: {st['counts'].get('follow', 0)} of today's {CAPS['follow']} follows so far"
     return None
 
 
@@ -271,7 +302,11 @@ def verified(resp, report):
 
 
 def act(action, c, st, report):
+    global _last_comment
     do, text = action["do"], action["text"].strip()
+    if do in ("reply", "comment"):
+        time.sleep(max(0.0, _last_comment + COMMENT_GAP - time.time()))
+        _last_comment = time.time()
     if do == "upvote":
         return molt("POST", f"/posts/{c['post_id']}/upvote")
     if do == "reply":
@@ -297,6 +332,9 @@ def main():
         (one_off if os.environ.get("DOORMAN_POST_FILE") else run)(st, report)
     finally:  # counts, the verification streak and what was seen survive a crash
         save_state(st)
+        if os.environ.get("GITHUB_OUTPUT") and not os.environ.get("DOORMAN_POST_FILE"):
+            with open(os.environ["GITHUB_OUTPUT"], "a") as f:  # the workflow keeps it for the Worker (doorman.yml)
+                f.write(f"next={next_talk(st)}\n")
 
 
 def one_off_comments(st, report, rows):
@@ -321,12 +359,14 @@ def one_off_comments(st, report, rows):
             time.sleep(65)  # new accounts: one comment a minute
         body = {"content": r["text"].strip(), **({"parent_id": r["parent_id"]} if r.get("parent_id") else {})}
         resp = molt("POST", f"/posts/{r['post_id']}/comments", body)
-        ok = resp.get("success", True) is not False and verified(resp, report)
+        created = resp.get("success", True) is not False
+        ok = created and verified(resp, report)
         st["verify_fails"] = 0 if ok else st["verify_fails"] + 1
         report.append("  (sent)" if ok else f"  (FAILED: {json.dumps(resp)[:300]})")
+        if created:  # Moltbook counts it even when the challenge then fails
+            st["counts"][action["do"]] = st["counts"].get(action["do"], 0) + 1
         if not ok:
             return
-        st["counts"][action["do"]] = st["counts"].get(action["do"], 0) + 1
         (st["answered"] if kind == "reply" else st["commented"]).append(r.get("parent_id") or r["post_id"])
         st["seen"].append(r["post_id"])
 
@@ -381,6 +421,10 @@ def run(st, report):
         sys.exit(f"DOORMAN_LIVE=1 needs a claimed account (now: {claim}); open the claim link from register.sh")
     if LIVE and st["verify_fails"] >= MAX_VERIFY_FAILS:
         sys.exit(f"{st['verify_fails']} failed verifications in a row; delete the doorman-state cache after checking why")
+    if next_talk(st) > time.time():
+        return report.append("Nothing to say yet: the pace allows no comment or reply until "
+                             f"{datetime.datetime.fromtimestamp(next_talk(st), datetime.timezone.utc):%H:%M} UTC. "
+                             "No search, no model.")
     cands, query = gather(st, claim == "claimed")
     report.append(f"Searched: \"{query}\". Candidates: {len(cands)}.")
     for c in cands:  # tried once is enough: no redrafting every half hour, no retrying after a crash
@@ -408,14 +452,16 @@ def run(st, report):
         else:
             report.append(line + "\n  (sending)")
             resp = act(a, c, st, report)
-            ok = resp.get("success", True) is not False and verified(resp, report)
+            created = resp.get("success", True) is not False
+            ok = created and verified(resp, report)
             st["verify_fails"] = 0 if ok else st["verify_fails"] + 1
             report.append("  (sent)" if ok else f"  (FAILED: {json.dumps(resp)[:200]})")
+            if created:  # Moltbook counts it against its limits even when the challenge then fails
+                st["counts"][a["do"]] = st["counts"].get(a["do"], 0) + 1
+                if a["do"] == "comment":
+                    st["commented"].append(c["post_id"])
             if not ok:
                 break  # one failure ends the run; the streak carries over so a bad day can't reach Moltbook's suspension
-            st["counts"][a["do"]] = st["counts"].get(a["do"], 0) + 1
-            if a["do"] == "comment":
-                st["commented"].append(c["post_id"])
 
 
 if __name__ == "__main__":

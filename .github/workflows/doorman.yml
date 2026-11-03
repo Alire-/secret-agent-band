@@ -34,6 +34,7 @@ jobs:
           key: doorman-state-${{ github.run_id }}
           restore-keys: doorman-state-
       - run: python3 doorman/doorman.py
+        id: doorman
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           MOLTBOOK_API_KEY: ${{ secrets.MOLTBOOK_API_KEY }}
@@ -45,3 +46,11 @@ jobs:
         with:
           path: doorman/state.json
           key: doorman-state-${{ github.run_id }}
+      # when the pace next allows a comment or reply, as a cache key: the Worker lists it and doesn't dispatch before
+      - if: always() && steps.doorman.outputs.next != ''
+        run: mkdir -p doorman-next && echo "${{ steps.doorman.outputs.next }}" > doorman-next/at
+      - uses: actions/cache/save@v4
+        if: always() && steps.doorman.outputs.next != ''
+        with:
+          path: doorman-next
+          key: doorman-next-${{ steps.doorman.outputs.next }}-${{ github.run_id }}

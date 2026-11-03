@@ -33,6 +33,7 @@ const cricket = (env: Env) => env.CRICKET.get(env.CRICKET.idFromName("cricket"))
 
 // GitHub's own cron never fired for this repo, so Cloudflare keeps the Doorman's time (doorman/PLAN.md).
 const DOORMAN_DISPATCH = "https://api.github.com/repos/Alire-/secret-agent-band/actions/workflows/doorman.yml/dispatches";
+const DOORMAN_NEXT = "https://api.github.com/repos/Alire-/secret-agent-band/actions/caches?key=doorman-next-&sort=created_at&direction=desc&per_page=1";
 
 const PORT = 8808;
 const INACTIVITY_MS = 2 * 60 * 60 * 1000; // the band, wallets and the live song live in memory; ledgers come back from R2
@@ -159,15 +160,16 @@ export default {
       console.error("cricket poke failed:", String(e));
     }
     if (!env.GITHUB_DISPATCH_TOKEN) return console.log("no GITHUB_DISPATCH_TOKEN: the Doorman sleeps");
-    const res = await fetch(DOORMAN_DISPATCH, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.GITHUB_DISPATCH_TOKEN}`,
-        Accept: "application/vnd.github+json",
-        "User-Agent": "secret-agent-band-worker", // GitHub refuses requests without one
-      },
-      body: JSON.stringify({ ref: "main" }),
-    });
+    const headers = {
+      Authorization: `Bearer ${env.GITHUB_DISPATCH_TOKEN}`,
+      Accept: "application/vnd.github+json",
+      "User-Agent": "secret-agent-band-worker", // GitHub refuses requests without one
+    };
+    // each run leaves, as a cache key, when its pace next allows a comment or reply: no run before then
+    const last = await fetch(DOORMAN_NEXT, { headers }).then((r) => r.ok ? r.json() : null).catch(() => null) as any;
+    const next = Number(String(last?.actions_caches?.[0]?.key ?? "").split("-")[2]);
+    if (next > Date.now() / 1000) return console.log(`the Doorman has nothing to say until ${new Date(next * 1000).toISOString()}`);
+    const res = await fetch(DOORMAN_DISPATCH, { method: "POST", headers, body: JSON.stringify({ ref: "main" }) });
     // a throw marks the invocation failed in Cron Events, where the operator looks
     if (!res.ok) throw new Error(`doorman dispatch: ${res.status} ${await res.text()}`);
   },
