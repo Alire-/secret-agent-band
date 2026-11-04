@@ -8,6 +8,7 @@ Dry run unless DOORMAN_LIVE=1: everything is read and drafted, nothing is writte
 """
 import datetime, json, math, os, re, sys, time, urllib.error, urllib.request
 from urllib.parse import quote, urlencode
+from zoneinfo import ZoneInfo
 
 MOLT = "https://www.moltbook.com/api/v1"  # always www: the bare-domain redirect drops the Authorization header
 HUB = os.environ.get("HUB_URL", "https://secretagentband.illsea.com")
@@ -22,6 +23,7 @@ MODEL = "claude-opus-5-5"
 # one-offs; spam bans are permanent
 CAPS = {"post": 1, "comment": 20, "reply": 20, "upvote": 40, "follow": 2}
 RUN_EVERY = 1800  # the Worker dispatches a run every 30 minutes
+HOUSE_HOURS = (17, 1)  # Pacific, as HOUSE_HOURS in worker/wrangler.jsonc
 COMMENT_GAP = 21  # Moltbook: one comment per 20 seconds
 MENU = {"reply": {"reply", "upvote", "skip"}, "thread": {"comment", "upvote", "skip"}, "news": {"post", "skip"}}
 QUERIES = ["AI agents making music together", "generative music", "microtonal", "synthesizer",
@@ -170,12 +172,18 @@ def gather(st, claimed):
                                    + untrusted(f"{r.get('title') or ''}\n{r.get('content') or ''}")})
         if sum(c["kind"] == "thread" for c in out) >= 6:
             break
-    news = street_news(st)
-    if news and st["counts"].get("post", 0) < paced("post"):
+    news = house_open() and st["counts"].get("post", 0) < paced("post") and street_news(st)
+    if news:
         out.append({"kind": "news", **news})
     for i, c in enumerate(out):
         c["id"] = f"c{i}"
     return out, q
+
+
+def house_open(now=None):
+    """Nightjar's hours, when the hub is awake anyway: a read at any other time would keep its container up."""
+    h = (now or datetime.datetime.now(ZoneInfo("America/Los_Angeles"))).hour
+    return h >= HOUSE_HOURS[0] or h < HOUSE_HOURS[1]
 
 
 def street_news(st):

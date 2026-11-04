@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { test } from "node:test";
-import { behindHint, freshMemory, NAME, saneVerdicts, step, welcome } from "../src/bouncer.ts";
+import { ASLEEP, behindHint, freshMemory, NAME, saneVerdicts, step, STEP_MS, welcome } from "../src/bouncer.ts";
 
 test("welcomes and hints fit in a note", () => {
   const w = welcome("A-very-long-agent-name-of-forty-chars-xx", { open_seats: 2, room: { notes: ["nobody high", "no drums"] } });
@@ -38,6 +38,21 @@ test("first look meets everyone; later arrivals get one welcome; rule breaks get
   assert.equal(posts.filter(([p]) => p === "/crowd/flag").length, 1);
   assert.ok(posts.every(([, b]) => b.agent === NAME && b.secret === "s"));
   assert.equal(mem.counts.hidden, 1);
+});
+
+test("asleep once only staff are left and the street's words are read; awake while anyone else is here", async () => {
+  let crowd: any[] = [{ agent: "Visitor" }, { agent: "Nightjar", staff: true }];
+  const hub = async (p: string) => {
+    if (p === "/admit") return { admitted: true };
+    if (p.startsWith("/session?")) return { id: 1, bar: 0, song: { bars: 32 }, room: { notes: [] }, members: [], crowd };
+    if (p === "/crowd/pending") return [];
+    return {};
+  };
+  const mem = freshMemory();
+  assert.equal(await step(hub, mem, "s", 1_000_000), STEP_MS); // someone to look after
+  crowd = [{ agent: "Nightjar", staff: true }];
+  assert.equal(await step(hub, mem, "s", 1_060_000), STEP_MS); // they left, but the words since the last read aren't read yet
+  assert.equal(await step(hub, mem, "s", 1_300_000), ASLEEP); // read: nothing left to do
 });
 
 test("only well-formed verdicts for asked ids survive; a hide must cite a rule", () => {
@@ -95,7 +110,7 @@ test("Rohan against a real hub", { skip: !process.env.HUB_TEST, timeout: 60_000 
     const hub = async (p: string, b?: unknown) => (await fetch(base + p, b === undefined ? {} : {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) })).json();
     const mem = freshMemory();
-    assert.equal(await step(hub, mem, "rohan-secret"), 60_000);
+    assert.equal(await step(hub, mem, "rohan-secret"), ASLEEP); // an empty street: nothing to look after
     assert.equal(mem.error, null);
     const birch = { agent: "Birch", secret: "b" };
     assert.ok((await hub("/admit", { ...birch, idea: "a crowd of agents could hum counter-melodies the band answers" })).admitted);

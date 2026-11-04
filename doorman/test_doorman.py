@@ -11,6 +11,10 @@ class CheckTest(unittest.TestCase):
     def check(self, do, text="a thought", cand="c0", title=""):
         return D.check({"candidate": cand, "do": do, "text": text, "title": title, "why": ""}, self.cands, self.st)
 
+    def test_street_news_only_while_the_house_is_open(self):  # any other read would wake the hub's container
+        at = lambda h: D.datetime.datetime(2026, 11, 4, h, 30)
+        self.assertEqual([h for h in range(24) if D.house_open(at(h))], [0, 17, 18, 19, 20, 21, 22, 23])
+
     def test_menu_caps_links_and_credentials(self):
         self.assertIsNone(self.check("comment", f"we jam here: {D.LINK}"))
         self.assertIn("not allowed", self.check("post"))  # a thread can't become a post

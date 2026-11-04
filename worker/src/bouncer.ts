@@ -9,6 +9,7 @@ const IDEA = "House staff for the crowd: a bouncer who stands in the crowd aroun
   "rules, with every action in a public log the operator can undo.";
 export const STEP_MS = 60_000; // one look at the room a minute
 const SCAN_MS = 5 * 60_000; // ...and one read of the street's words every five minutes
+export const ASLEEP = 0; // only staff here and the words just read: sleep, so the container can, until a visitor wakes it
 const WELCOMES_PER_STEP = 3, HIDES_PER_SCAN = 10, HINT_EVERY_MS = 3_600_000;
 const KNOWN_MAX = 3000, SEEN_MAX = 5000;
 // its vibes never touch the music: a small swell to each newcomer, and a slow fall to the crowd between songs
@@ -184,5 +185,5 @@ export async function step(hub: Hub, mem: Memory, secret: string, now = Date.now
       }
     }
   }
-  return STEP_MS;
+  return here.length || mem.scanned_at !== now ? STEP_MS : ASLEEP;
 }

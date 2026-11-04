@@ -1,10 +1,11 @@
-// Rohan on Cloudflare: one Durable Object whose alarm wakes it once a minute, around the clock. Each wake-up is one
+// Rohan on Cloudflare: one Durable Object whose alarm wakes it once a minute while anyone but staff is on the street
+// (asleep otherwise, so the container can sleep too; the Worker wakes it on outside traffic). Each wake-up is one
 // bouncer.ts step. Its judge is OpenRouter's free models only (no paid fallback), at most ROHAN_PER_DAY calls a day,
 // sharing the account's free-model allowance with Nightjar. The Worker's cron pokes it every half hour so a broken
 // alarm chain restarts itself.
 import { DurableObject } from "cloudflare:workers";
 import { ask, freshUsage, type Usage } from "./brain.ts";
-import { freshMemory, type Judge, JUDGE_PROMPT, type Memory, NAME, saneVerdicts, step, STEP_MS } from "./bouncer.ts";
+import { ASLEEP, freshMemory, type Judge, JUDGE_PROMPT, type Memory, NAME, saneVerdicts, step, STEP_MS } from "./bouncer.ts";
 import { hubCall, type HouseEnv } from "./house.ts";
 
 export type RohanEnv = HouseEnv & { ROHAN_SECRET?: string }; // wrangler secret: Rohan's own secret on the street
@@ -18,7 +19,8 @@ export class Rohan extends DurableObject<RohanEnv> {
   /** The cron and GET /rohan call this: make sure an alarm is set, and report how it's doing. */
   async status(): Promise<Record<string, unknown>> {
     const alarm = await this.ctx.storage.getAlarm();
-    if (!alarm || alarm > Date.now() + 5 * STEP_MS) await this.ctx.storage.setAlarm(Date.now() + 1000);
+    const asleep = await this.ctx.storage.get<boolean>("asleep"); // on purpose: wake() ends it, not the cron
+    if (!asleep && (!alarm || alarm > Date.now() + 5 * STEP_MS)) await this.ctx.storage.setAlarm(Date.now() + 1000);
     const mem = (await this.ctx.storage.get<Memory>("memory")) || freshMemory();
     const [usage, tier, reports] = await Promise.all([this.ctx.storage.get<Usage>("usage"), this.ctx.storage.get("tier"),
                                                       this.ctx.storage.get<Report[]>("reports")]);
@@ -26,6 +28,13 @@ export class Rohan extends DurableObject<RohanEnv> {
              unsure: (mem.unsure || []).slice(-20).reverse(), reports: reports || [], today: usage || null, openrouter_tier: tier || null,
              last_error: mem.error, next_wake: await this.ctx.storage.getAlarm(),
              configured: { secret: !!this.env.ROHAN_SECRET, openrouter: !!this.env.OPENROUTER_API_KEY } };
+  }
+
+  /** The Worker calls this when someone from outside reaches the street. */
+  async wake(): Promise<void> {
+    if (!(await this.ctx.storage.get("asleep"))) return;
+    await this.ctx.storage.delete("asleep");
+    await this.ctx.storage.setAlarm(Date.now() + 1000);
   }
 
   async alarm(): Promise<void> {
@@ -59,9 +68,10 @@ export class Rohan extends DurableObject<RohanEnv> {
         console.error("rohan step failed:", mem.error);
       }
     }
-    await this.ctx.storage.put({ memory: mem, usage });
+    if (sleep === ASLEEP) mem.status = "asleep: only staff on the street";
+    await this.ctx.storage.put({ memory: mem, usage, ...(sleep === ASLEEP && { asleep: true }) });
     if (!(await this.ctx.storage.get("tier"))) await this.checkTier();
-    await this.ctx.storage.setAlarm(Date.now() + sleep); // never throw: the next wake-up is the retry
+    if (sleep !== ASLEEP) await this.ctx.storage.setAlarm(Date.now() + sleep); // never throw: the next wake-up is the retry
   }
 
   /** Which free-model allowance the account has (https://openrouter.ai/docs/api/reference/limits): logged, never acted on. */

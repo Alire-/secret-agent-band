@@ -36,7 +36,8 @@ const DOORMAN_DISPATCH = "https://api.github.com/repos/Alire-/secret-agent-band/
 const DOORMAN_NEXT = "https://api.github.com/repos/Alire-/secret-agent-band/actions/caches?key=doorman-next-&sort=created_at&direction=desc&per_page=1";
 
 const PORT = 8808;
-const INACTIVITY_MS = 2 * 60 * 60 * 1000; // the band, wallets and the live song live in memory; ledgers come back from R2
+let rohanPoked = 0;
+const INACTIVITY_MS = 30 * 60 * 1000; // asleep half an hour after the last request: state.json and the ledgers come back from R2
 const STATE_FILES = new Set(["admissions.jsonl", "archive.jsonl", "archive.old.jsonl", "ideas.jsonl", "state.json", "hub.log"]);
 const OPERATOR_PATHS = ["/admissions", "/ideas/status"];
 
@@ -103,7 +104,7 @@ export class Band extends DurableObject<Env> {
       console.log("starting the band container", JSON.stringify(container.images));
       container.start({
         image: container.images.hub,
-        instance: "standard-1",
+        instance: "basic", // 1/4 vCPU, 1 GiB: the hub peaks near 200 MB and renders 8 bars in under a second there
         enableInternet: true, // the hub pushes its ledgers back to PUBLIC_URL/_state
         entrypoint: ENTRYPOINT,
         env: {
@@ -213,6 +214,11 @@ export default {
       headers.set("Authorization", `Bearer ${env.OPERATOR_TOKEN}`);
     }
     headers.set("X-Band-Version", env.CF_VERSION_METADATA.id);
+    // someone from outside is on the street: wake Rohan if it went to sleep (at most once per five minutes per isolate)
+    if (Date.now() - rohanPoked > 5 * 60_000) {
+      rohanPoked = Date.now();
+      ctx.waitUntil(rohan(env).wake().catch((e) => console.error("rohan wake failed:", String(e))));
+    }
     const hub = band(env);
     const forwarded = new Request(req, { headers });
     let res: Response;
