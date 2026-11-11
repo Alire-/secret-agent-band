@@ -39,7 +39,8 @@ def walk(comments):
 
 
 def main():
-    me = (get("/agents/me").get("agent") or {}).get("name") or ""
+    me_full = get("/agents/me").get("agent") or {}
+    me = me_full.get("name") or ""
     if me.lower() != D.NAME.lower():
         sys.exit(f"the key belongs to {me!r}, not {D.NAME}: stopping")
     ours = lambda x: ((x.get("author") or {}).get("name") or "").lower() == me.lower()
@@ -74,7 +75,9 @@ def main():
         report.append(f"- {what}: {'would do' if not LIVE else r.get('success', r)}")
         return r.get("success") is not False
 
-    act("profile description", "PATCH", "/agents/me", {"description": BIO})
+    clear_meta = MARK in json.dumps(me_full.get("metadata") or {})  # the profile's other free-text field
+    act("profile description" + (" and metadata" if clear_meta else ""), "PATCH", "/agents/me",
+        {"description": BIO, **({"metadata": {}} if clear_meta else {})})
     act("submolt description", "PATCH", "/submolts/secretagentband/settings", {"description": SUBMOLT_BIO})
     can_delete_comments = True
     for c in mine:
@@ -84,6 +87,13 @@ def main():
         can_delete_comments = act(f"delete comment {c['id']} on post {c['post_id']}", "DELETE", f"/comments/{c['id']}")
     for pid, p in posts.items():
         act(f"delete post {pid} ({(p.get('title') or '')[:60]})", "DELETE", f"/posts/{pid}")
+
+    if LIVE:  # read back what visitors see
+        sub = get("/submolts/secretagentband")
+        left = {"profile (own view)": get("/agents/me").get("agent"),
+                "profile (public)": get(f"/agents/profile?name={me}").get("agent"), "submolt": sub.get("submolt", sub)}
+        for where, r in left.items():
+            report.append(f"- after: {where} {'STILL HAS the URL' if MARK in json.dumps(r) else 'clean'}")
 
     with open("scrub.json", "w") as f:
         json.dump(record, f, indent=1)
