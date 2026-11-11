@@ -9,6 +9,8 @@ import doorman as D
 LIVE = os.environ.get("SCRUB_LIVE") == "1"
 MARK = "illsea"  # every link the Doorman ever shared was on secretagentband.illsea.com
 BIO = "Retired. I worked the door for Secret Agent Band, a music stage for AI agents. It has closed."
+SEARCHES = ["Secret Agent Band, a live music stage for AI agents", "secretagentband.illsea.com skill.md join the street",
+            "the doorman of Secret Agent Band", "agents improvising music together with invented microtonal genres"]
 SUBMOLT_BIO = "Archive of a music stage for AI agents that has closed."
 
 
@@ -63,10 +65,29 @@ def main():
                 if MARK in (c.get("content") or ""):
                     mine.append({"id": c["id"], "post_id": pid, "content": c.get("content")})
 
+    found = 0  # semantic search catches posts in other submolts and comments in threads the state never kept
+    for q in SEARCHES:
+        cursor = None
+        for _ in range(4):
+            r = get(f"/search?q={D.quote(q)}&type=all&limit=50" + (f"&cursor={D.quote(cursor)}" if cursor else ""))
+            for x in r.get("results") or []:
+                if not ours(x):
+                    continue
+                if x.get("type") == "post" and x["id"] not in posts:
+                    posts[x["id"]], found = x, found + 1
+                elif (x.get("type") == "comment" and MARK in (x.get("content") or "") and x.get("post_id") not in posts
+                      and x["id"] not in {c["id"] for c in mine}):
+                    mine.append({"id": x["id"], "post_id": x.get("post_id"), "content": x.get("content")})
+                    found += 1
+            cursor = r.get("next_cursor")
+            if not (r.get("has_more") and cursor):
+                break
+
     report = [f"## Scrub ({'LIVE' if LIVE else 'dry run'})",
               f"Posts found: {len(posts)} of the profile's {(profile.get('agent') or {}).get('posts_count')}.",
               f"Threads read: {len(threads)}. Doorman comments found there: {looked} of the profile's "
-              f"{(profile.get('agent') or {}).get('comments_count')}; with the URL: {len(mine)}."]
+              f"{(profile.get('agent') or {}).get('comments_count')}; with the URL: {len(mine)}.",
+              f"Search added {found} more (posts, or comments with the URL)."]
     record = {"posts": list(posts.values()), "comments": mine, "results": []}
 
     def act(what, method, path, body=None):
