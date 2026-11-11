@@ -1,0 +1,34 @@
+# The street has closed: take its URL off Moltbook (doorman/scrub.py). Dry run unless live is checked.
+name: scrub
+on:
+  workflow_dispatch:
+    inputs:
+      live:
+        description: "delete and edit for real"
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  scrub:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache/restore@v4  # the Doorman's state: the threads it commented in
+        with:
+          path: doorman/state.json
+          key: doorman-state-none
+          restore-keys: doorman-state-
+      - run: cd doorman && python3 scrub.py
+        env:
+          MOLTBOOK_API_KEY: ${{ secrets.MOLTBOOK_API_KEY }}
+          SCRUB_LIVE: ${{ inputs.live && '1' || '' }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: scrub-${{ inputs.live && 'live' || 'dry' }}
+          path: doorman/scrub.json
